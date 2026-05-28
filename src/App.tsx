@@ -4,18 +4,31 @@ import { useMedia } from './useMedia';
 import { useAudioAnalyzer } from './useAudioAnalyzer';
 import { VideoOutput } from './components/VideoOutput';
 import { ControlDeck } from './components/VJControls';
+import { MidiPanel } from './components/MidiPanel';
 import { AlertTriangle, Film, Upload, X as XIcon, SkipForward, SkipBack, ListMusic } from 'lucide-react';
 import { routeFiles, VJ_FILE_ACCEPT } from './fileRouter';
+import { useMidi } from './useMidi';
 
 export default function App() {
   const [vjState, setVjState] = useState<VJState>(DEFAULT_VJ_STATE);
   const [routerError, setRouterError] = useState<string | null>(null);
+  const [lastSeenCc, setLastSeenCc] = useState<{ cc: number; value: number; channel: number } | null>(null);
   const { videoRef, error, isInitializing } = useMedia(vjState.sourceType, vjState.clipUrl);
   const { getAudioLevels } = useAudioAnalyzer(vjState.audioReactive);
 
   const updateState = (updates: Partial<VJState>) => {
     setVjState((prev) => ({ ...prev, ...updates }));
   };
+
+  // Web MIDI integration. Mapped CCs / notes patch VJState directly;
+  // audio analysis (mic / SA3 parent bridge) still flows independently
+  // through useAudioAnalyzer — both drive the visualizer simultaneously.
+  const midi = useMidi({
+    onCcChange: (cc, value, channel) => setLastSeenCc({ cc, value, channel }),
+    onParamChange: (key, value) => {
+      setVjState((prev) => ({ ...prev, [key]: value }));
+    },
+  });
 
   /** Multi-file router entry point used by the welcome-state file
    *  picker, the controls deck picker, and the drop handler. Detects
@@ -166,6 +179,21 @@ export default function App() {
             {routerError}
           </div>
         )}
+
+        {/* MIDI overlay — top-right pill that expands into the
+            mapper. Sits above the rest of the canvas overlays. */}
+        <MidiPanel
+          supported={midi.supported}
+          ready={midi.ready}
+          error={midi.error}
+          inputs={midi.inputs}
+          mappings={midi.mappings}
+          learning={midi.learning}
+          setLearning={midi.setLearning}
+          setMapping={midi.setMapping}
+          resetMappings={midi.resetMappings}
+          lastSeenCc={lastSeenCc}
+        />
 
         {/* Playlist strip — shown when 2+ audio/video entries queued.
             Lives at the bottom of the canvas; click an entry to jump,
