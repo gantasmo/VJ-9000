@@ -38,6 +38,7 @@ import {
   scaleCcValue,
   type NumericVJField,
 } from './midiParams';
+import { subscribeToMidi } from './sa3Bridge';
 
 export interface MidiMapping {
   /** Which controller event this param is bound to. */
@@ -263,6 +264,63 @@ export function useMidi(opts: UseMidiOpts = {}) {
       window.localStorage.removeItem(STORAGE_KEY);
     }
     setMappings(loadMappings());
+  }, []);
+
+  // SA3-bridge subscription: when running inside SA3's VJ iframe,
+  // the parent forwards every MIDI message from the user's
+  // controller via postMessage. Synthesize a MIDIMessageEvent-like
+  // payload and run it through the same mapping logic as direct
+  // Web MIDI input. Either source reaches the same mappings table.
+  useEffect(() => {
+    const unsub = subscribeToMidi((msg) => {
+      const [status, data1, data2] = msg.data;
+      if (typeof status !== 'number') return;
+      const command = status & 0xf0;
+      const channel = status & 0x0f;
+      if (command === 0xb0) {
+        optsRef.current.onCcChange?.(data1, data2, channel);
+        const target = learningRef.current;
+        if (target) {
+          setMappings((prev) => ({
+            ...prev,
+            [target]: { kind: 'cc', number: data1, channel },
+          }));
+          setLearning(null);
+          return;
+        }
+        for (const [paramKey, mappingRaw] of Object.entries(mappingsRef.current)) {
+          const mapping = mappingRaw as MidiMapping;
+          if (mapping.kind !== 'cc') continue;
+          if (mapping.number !== data1) continue;
+          if (mapping.channel !== null && mapping.channel !== channel) continue;
+          const def = MIDI_PARAMS_BY_KEY[paramKey as NumericVJField];
+          const scaled = scaleCcValue(mapping.inverted ? 127 - data2 : data2, def);
+          optsRef.current.onParamChange?.(paramKey as NumericVJField, scaled);
+        }
+      } else if (command === 0x90 || command === 0x80) {
+        const kind: 'on' | 'off' = command === 0x90 && data2 > 0 ? 'on' : 'off';
+        optsRef.current.onNote?.(data1, data2, kind, channel);
+        const target = learningRef.current;
+        if (target && kind === 'on') {
+          setMappings((prev) => ({
+            ...prev,
+            [target]: { kind: 'note', number: data1, channel },
+          }));
+          setLearning(null);
+          return;
+        }
+        for (const [paramKey, mappingRaw] of Object.entries(mappingsRef.current)) {
+          const mapping = mappingRaw as MidiMapping;
+          if (mapping.kind !== 'note') continue;
+          if (mapping.number !== data1) continue;
+          if (mapping.channel !== null && mapping.channel !== channel) continue;
+          const def = MIDI_PARAMS_BY_KEY[paramKey as NumericVJField];
+          const scaled = scaleCcValue(mapping.inverted ? 127 - data2 : data2, def);
+          optsRef.current.onParamChange?.(paramKey as NumericVJField, scaled);
+        }
+      }
+    });
+    return unsub;
   }, []);
 
   return {

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { getExternalLevels } from './sa3Bridge';
+import { getExternalLevels, getExternalInputs } from './sa3Bridge';
 
 export interface AudioLevels {
   bass: number;
@@ -65,8 +65,19 @@ export function useAudioAnalyzer(isActive: boolean) {
   // messages, getExternalLevels() returns null and the mic path runs
   // exactly as before.
   const getAudioLevels = (): AudioLevels => {
-    const external = getExternalLevels();
-    if (external) return external;
+    // Respect SA3-side input mutes. When SA3 has 'audio' off the
+    // external bridge is treated as silent; when 'mic' is off the
+    // local mic analyser is treated as silent. Either pathway can
+    // be independently muted.
+    const inputs = getExternalInputs();
+    if (inputs.audio) {
+      const external = getExternalLevels();
+      if (external) return external;
+    }
+
+    if (!inputs.mic) {
+      return { bass: 0, mid: 0, high: 0, volume: 0 };
+    }
 
     if (!analyzerRef.current || !dataArrayRef.current) {
        return { bass: 0, mid: 0, high: 0, volume: 0 };

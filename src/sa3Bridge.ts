@@ -35,10 +35,27 @@ export interface ExternalTrackMeta {
 
 const LEVELS_STALE_MS = 200;
 
+export interface ExternalInputState {
+  mic: boolean;
+  audio: boolean;
+  midi: boolean;
+}
+
+export interface ExternalMidiMessage {
+  /** 3-byte MIDI message: [status, data1, data2]. */
+  data: number[];
+  /** parent's performance.now() at send time — useful for jitter
+   *  measurement. */
+  t: number;
+}
+
 let latestLevels: ExternalAudioLevels | null = null;
 let latestLevelsAt = 0;
 let latestMeta: ExternalTrackMeta | null = null;
+let latestInputs: ExternalInputState = { mic: true, audio: true, midi: true };
 const metaListeners = new Set<(meta: ExternalTrackMeta) => void>();
+const inputListeners = new Set<(state: ExternalInputState) => void>();
+const midiListeners = new Set<(msg: ExternalMidiMessage) => void>();
 
 if (typeof window !== 'undefined') {
   window.addEventListener('message', (event: MessageEvent) => {
@@ -68,8 +85,46 @@ if (typeof window !== 'undefined') {
           /* listener should not throw, but be defensive */
         }
       });
+    } else if (data.type === 'sa3-vj/inputs') {
+      latestInputs = {
+        mic: Boolean(data.mic),
+        audio: Boolean(data.audio),
+        midi: Boolean(data.midi),
+      };
+      inputListeners.forEach((cb) => {
+        try { cb(latestInputs); } catch { /* defensive */ }
+      });
+    } else if (data.type === 'sa3-vj/midi') {
+      if (Array.isArray(data.data)) {
+        const msg: ExternalMidiMessage = {
+          data: data.data.map((n: unknown) => Number(n) | 0),
+          t: typeof data.t === 'number' ? data.t : performance.now(),
+        };
+        midiListeners.forEach((cb) => {
+          try { cb(msg); } catch { /* defensive */ }
+        });
+      }
     }
   });
+}
+
+/** Current input enable state pushed by SA3 (mic/audio/midi). */
+export function getExternalInputs(): ExternalInputState {
+  return latestInputs;
+}
+
+/** Subscribe to input-state changes. Returns an unsubscribe fn. */
+export function subscribeToInputs(cb: (state: ExternalInputState) => void): () => void {
+  inputListeners.add(cb);
+  cb(latestInputs);
+  return () => { inputListeners.delete(cb); };
+}
+
+/** Subscribe to forwarded MIDI events. Returns an unsubscribe fn.
+ *  Each call delivers the 3-byte MIDI message verbatim. */
+export function subscribeToMidi(cb: (msg: ExternalMidiMessage) => void): () => void {
+  midiListeners.add(cb);
+  return () => { midiListeners.delete(cb); };
 }
 
 /**
