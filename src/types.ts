@@ -3,6 +3,12 @@ export interface VideoClip {
   name: string;
   url: string;
   size?: string;
+  /** What kind of media this entry is. Audio entries play through
+   *  the same <video> element (analyzer-driven, no frames); image
+   *  entries aren't routed here — they go to imageUrl below. The
+   *  bucket therefore holds video + audio clips; image is its own
+   *  independent backdrop slot. */
+  kind?: 'video' | 'audio';
 }
 
 export const DEFAULT_CLIPS: VideoClip[] = [];
@@ -12,6 +18,18 @@ export interface VJState {
   // Input Source
   sourceType: 'camera' | 'clip';
   clipUrl: string | null;
+  /** Display label for the currently-loaded clip (file name). */
+  clipLabel?: string | null;
+  /** Set by the file router so the UI can label 'AUDIO LOADED' vs
+   *  'VIDEO LOADED' without sniffing the URL. */
+  clipKind?: 'video' | 'audio' | null;
+  /** Static image rendered as a backdrop layer behind the WebGL
+   *  canvas. Independent of clipUrl — user can have both at once. */
+  imageUrl?: string | null;
+  imageLabel?: string | null;
+  /** When true, the next bucket entry auto-plays when the current
+   *  clip ends. When false, playback stops at the end of each clip. */
+  playlistAutoAdvance?: boolean;
   videoBucket: VideoClip[];
   activeClipId: string | null;
   autoSwitchClips: boolean;
@@ -88,6 +106,11 @@ export const DEFAULT_VJ_STATE: VJState = {
   layoutMode: 'standard',
   sourceType: 'camera',
   clipUrl: null,
+  clipLabel: null,
+  clipKind: null,
+  imageUrl: null,
+  imageLabel: null,
+  playlistAutoAdvance: true,
   videoBucket: [],
   activeClipId: null,
   autoSwitchClips: true,
