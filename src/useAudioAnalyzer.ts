@@ -1,5 +1,4 @@
 import { useEffect, useRef } from 'react';
-import { getExternalLevels, getExternalInputs } from './sa3Bridge';
 
 export interface AudioLevels {
   bass: number;
@@ -55,34 +54,12 @@ export function useAudioAnalyzer(isActive: boolean) {
     };
   }, [isActive]);
 
-  // Expose an ultra-fast polling function for requestAnimationFrame.
-  // Bridge priority: when this app runs INSIDE SA3's VJ tab, the
-  // parent window forwards amplitude levels via postMessage (see
-  // sa3Bridge.ts) — those reflect SA3's master AnalyserNode and
-  // whatever's playing in SA3's global player. We prefer those when
-  // available, falling back to the local mic-capture analyzer if not.
-  // Standalone behaviour is unchanged: when there's no parent posting
-  // messages, getExternalLevels() returns null and the mic path runs
-  // exactly as before.
+  // Expose an ultra-fast polling function for requestAnimationFrame
   const getAudioLevels = (): AudioLevels => {
-    // Respect SA3-side input mutes. When SA3 has 'audio' off the
-    // external bridge is treated as silent; when 'mic' is off the
-    // local mic analyser is treated as silent. Either pathway can
-    // be independently muted.
-    const inputs = getExternalInputs();
-    if (inputs.audio) {
-      const external = getExternalLevels();
-      if (external) return external;
-    }
-
-    if (!inputs.mic) {
-      return { bass: 0, mid: 0, high: 0, volume: 0 };
-    }
-
     if (!analyzerRef.current || !dataArrayRef.current) {
        return { bass: 0, mid: 0, high: 0, volume: 0 };
     }
-
+    
     analyzerRef.current.getByteFrequencyData(dataArrayRef.current);
     const data = dataArrayRef.current;
     

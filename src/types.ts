@@ -1,34 +1,22 @@
-export interface PlaylistEntry {
+export interface VideoClip {
   id: string;
+  name: string;
   url: string;
-  label: string;
-  kind: 'audio' | 'video';
+  size?: string;
 }
 
+export const DEFAULT_CLIPS: VideoClip[] = [];
+
 export interface VJState {
-  // Input Source — 'clip' covers video AND audio files (audio plays
-  // through the same <video> element which feeds the audio analyzer;
-  // the element just shows no frames when the file is audio-only).
-  // imageUrl is rendered as a still backdrop layered behind the
-  // visualizer canvas — preserved independently so the user can
-  // toggle between clip + image without losing either selection.
+  layoutMode: 'standard' | 'split' | 'preview' | 'fullscreen';
+  // Input Source
   sourceType: 'camera' | 'clip';
   clipUrl: string | null;
-  /** Name of the currently-loaded clip / audio file, for display. */
-  clipLabel?: string | null;
-  /** Set by the file router so the UI can label 'AUDIO LOADED' vs
-   *  'VIDEO LOADED' without sniffing the URL. */
-  clipKind?: 'video' | 'audio' | null;
-  /** Static image to render behind the visualizer canvas. */
-  imageUrl?: string | null;
-  imageLabel?: string | null;
-  /** Audio/video playlist — queue of loaded clips. The element at
-   *  `playlistIndex` is the one currently playing (mirrored to
-   *  clipUrl + clipLabel). `playlistAutoAdvance` controls whether
-   *  the next track auto-plays on `ended`. */
-  playlist?: PlaylistEntry[];
-  playlistIndex?: number;
-  playlistAutoAdvance?: boolean;
+  videoBucket: VideoClip[];
+  activeClipId: string | null;
+  autoSwitchClips: boolean;
+  autoSwitchInterval: number; // Speed multiplier for switching
+  clipAudio: boolean;
 
   // Color & Optics
   hue: number;
@@ -37,7 +25,7 @@ export interface VJState {
   brightness: number;
   invert: boolean;
   edgeDetect: boolean;
-
+  
   // Geometry
   mirrorX: boolean;
   mirrorY: boolean;
@@ -46,7 +34,7 @@ export interface VJState {
   equirect: boolean;
   stereoMode: 'none' | 'sbs' | 'tb';
   softEdges: boolean;
-
+  
   // Distortion & FX
   feedback: number;
   glitch: number;
@@ -57,12 +45,12 @@ export interface VJState {
   strobe: number;
   pixelate: number;
   waveWarp: number;
-
+  
   // Post-Processing
   scanlines: boolean;
   vignette: boolean;
   crt: boolean;
-
+  
   // Sequencing
   bpm: number;
   autoLFO: boolean;
@@ -70,7 +58,7 @@ export interface VJState {
   autoPilot: boolean;
   recording: boolean;
   aspectRatio: string;
-
+  
   // Timecode
   playbackSpeed: number;
   reversePlayback: boolean;
@@ -78,36 +66,41 @@ export interface VJState {
   echoTrails: number;
   slitScan: number;
   timeDisplace: number;
-
+  
   // Autopilot specific configuration
   apConfig: {
     geo: boolean;
     corrupt: boolean;
     color: boolean;
+    timecode: boolean;
     speed: number;
     chaos: number;
   };
   apWeights: Record<string, number>;
+  apTriggerSource: 'volume' | 'bass' | 'mid-high' | 'time' | 'mixed' | 'chaos';
+  apSensitivity: number;
+  apRampType: 'none' | 'linear' | 'exponential' | 'sigmoid';
+  apSubdueDepth: number;
+  apModulateIntensity: boolean;
 }
 
 export const DEFAULT_VJ_STATE: VJState = {
+  layoutMode: 'standard',
   sourceType: 'camera',
   clipUrl: null,
-  clipLabel: null,
-  clipKind: null,
-  imageUrl: null,
-  imageLabel: null,
-  playlist: [],
-  playlistIndex: 0,
-  playlistAutoAdvance: true,
+  videoBucket: [],
+  activeClipId: null,
+  autoSwitchClips: true,
+  autoSwitchInterval: 8,
+  clipAudio: false,
 
   hue: 0,
-  saturation: 150,
-  contrast: 130,
+  saturation: 100,
+  contrast: 100,
   brightness: 100,
   invert: false,
   edgeDetect: false,
-
+  
   mirrorX: false,
   mirrorY: false,
   kaleidoscope: false,
@@ -115,7 +108,7 @@ export const DEFAULT_VJ_STATE: VJState = {
   equirect: false,
   stereoMode: 'none',
   softEdges: true,
-
+  
   feedback: 0.85,
   glitch: 0,
   rgbGhost: 0,
@@ -125,31 +118,38 @@ export const DEFAULT_VJ_STATE: VJState = {
   strobe: 0,
   pixelate: 0,
   waveWarp: 0,
-
+  
   scanlines: true,
   vignette: true,
   crt: true,
-
+  
   bpm: 128,
   autoLFO: false,
   audioReactive: false,
   autoPilot: false,
   recording: false,
   aspectRatio: 'free',
-
+  
   playbackSpeed: 1.0,
   reversePlayback: false,
   posterizeTime: 60,
   echoTrails: 0,
   slitScan: 0,
   timeDisplace: 0,
-
+  
   apConfig: {
     geo: true,
     corrupt: true,
     color: true,
-    speed: 1.0,
-    chaos: 0.5,
+    timecode: true,
+    speed: 1.5,
+    chaos: 0.6,
   },
   apWeights: {},
+  apTriggerSource: 'mixed',
+  apSensitivity: 0.15,
+  apRampType: 'linear',
+  apSubdueDepth: 0.1,
+  apModulateIntensity: true,
 };
+

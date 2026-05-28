@@ -1,7 +1,27 @@
-import React from 'react';
-import { VJState } from '../types';
-import { Activity, RefreshCcw, Upload, Sliders, Cpu, Radio, Hash, Video } from 'lucide-react';
-import { routeFiles, VJ_FILE_ACCEPT } from '../fileRouter';
+import React, { useState } from 'react';
+import { VJState, DEFAULT_VJ_STATE } from '../types';
+import { Activity, RefreshCcw, Upload, Sliders, Cpu, Radio, Hash, Video, LayoutPanelLeft, Columns, Monitor, Maximize } from 'lucide-react';
+
+const AUTOPILOT_EFFECTS = [
+  { key: 'feedback', label: 'Feedback Wash' },
+  { key: 'glitch', label: 'Digital Glitch' },
+  { key: 'rgbSplit', label: 'Anaglyph Split' },
+  { key: 'waveWarp', label: 'Wave Warp' },
+  { key: 'pixelate', label: 'Pixel Destroy' },
+  { key: 'chromaAb', label: 'Chroma Ab' },
+  { key: 'backskip', label: 'Buffer Skip' },
+  { key: 'playbackSpeed', label: 'Playback Speed' },
+  { key: 'reversePlayback', label: 'Reverse Shuttles' },
+  { key: 'posterizeTime', label: 'Stutter Limit' },
+  { key: 'echoTrails', label: 'Motion Echoes' },
+  { key: 'slitScan', label: 'Slit Scan' },
+  { key: 'timeDisplace', label: 'Time Displace' },
+  { key: 'kaleido', label: 'Kaleidoscope' },
+  { key: 'mirrorX', label: 'Horizontal Mirror' },
+  { key: 'mirrorY', label: 'Vertical Mirror' },
+  { key: 'edgeDetect', label: 'Neon Edge Trace' },
+  { key: 'equirect', label: 'Panoramic Warp' },
+];
 
 interface ControlsProps {
   state: VJState;
@@ -11,16 +31,24 @@ interface ControlsProps {
 }
 
 export function ControlDeck({ state, updateState, reset, hasCameraError }: ControlsProps) {
+  const [showWeights, setShowWeights] = useState(true);
+  const [showApDynamics, setShowApDynamics] = useState(false);
   
   const Fader = ({ label, value, min, max, step=0.01, onChange, unit="", paramKey }: any) => {
     const percentage = ((value - min) / (max - min)) * 100;
     const apActiveGlobally = state.autoPilot;
     const apWeight = paramKey && state.apWeights ? (state.apWeights[paramKey] ?? 1.0) : 1.0;
     
+    const handleDoubleClick = () => {
+      if (paramKey && (DEFAULT_VJ_STATE as any)[paramKey] !== undefined) {
+          onChange((DEFAULT_VJ_STATE as any)[paramKey]);
+      }
+    };
+    
     return (
       <div className="flex flex-col mb-4 group relative">
         <div className="flex justify-between items-center text-[10px] text-zinc-500 uppercase tracking-widest font-mono mb-1.5 focus-within:text-cyan-400">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 cursor-pointer" onDoubleClick={handleDoubleClick} title="Double click to reset">
             <span className="group-hover:text-cyan-400 transition-colors">{label}</span>
           </div>
           <div className="flex gap-2 items-center">
@@ -97,9 +125,10 @@ export function ControlDeck({ state, updateState, reset, hasCameraError }: Contr
   const apGeo = apActive && state.apConfig.geo;
   const apCorrupt = apActive && state.apConfig.corrupt;
   const apColor = apActive && state.apConfig.color;
+  const apTimecode = apActive && state.apConfig.timecode;
 
   return (
-    <div className="h-full bg-[#111] border-l border-zinc-800 flex flex-col items-stretch overflow-y-auto w-96 shrink-0 custom-scrollbar">
+    <div className="h-full bg-[#111] border-l border-zinc-800 flex flex-col items-stretch overflow-y-auto w-full shrink-0 custom-scrollbar">
       {/* Header */}
       <div className="p-4 border-b border-zinc-800 flex items-center justify-between sticky top-0 bg-[#111] z-50 shadow-md">
         <div className="flex flex-col">
@@ -111,9 +140,42 @@ export function ControlDeck({ state, updateState, reset, hasCameraError }: Contr
             {hasCameraError ? 'CAMERA OFFLINE // SYS ERR' : 'OPTO-SENSOR ACTIVE // LIVE'}
           </span>
         </div>
-        <button onClick={reset} className="p-2.5 text-zinc-600 bg-black border border-zinc-800 rounded hover:text-white hover:border-zinc-500 hover:bg-zinc-800 transition-colors" title="Master Reset">
-          <RefreshCcw className="w-4 h-4" />
-        </button>
+        <div className="flex items-center gap-1">
+          <button 
+             onClick={() => updateState({ layoutMode: 'standard' })} 
+             className={`p-1.5 rounded transition-colors ${state.layoutMode === 'standard' ? 'text-cyan-400 bg-cyan-900/40 border border-cyan-800' : 'text-zinc-600 bg-black border border-zinc-800 hover:text-white hover:border-zinc-500 hover:bg-zinc-800'}`} 
+             title="Standard Layout"
+          >
+            <LayoutPanelLeft className="w-4 h-4" />
+          </button>
+          <button 
+             onClick={() => updateState({ layoutMode: 'split' })} 
+             className={`p-1.5 rounded transition-colors ${state.layoutMode === 'split' ? 'text-cyan-400 bg-cyan-900/40 border border-cyan-800' : 'text-zinc-600 bg-black border border-zinc-800 hover:text-white hover:border-zinc-500 hover:bg-zinc-800'}`} 
+             title="50/50 Split Layout"
+          >
+            <Columns className="w-4 h-4" />
+          </button>
+          <button 
+             onClick={() => updateState({ layoutMode: 'preview' })} 
+             className={`p-1.5 rounded transition-colors ${state.layoutMode === 'preview' ? 'text-cyan-400 bg-cyan-900/40 border border-cyan-800' : 'text-zinc-600 bg-black border border-zinc-800 hover:text-white hover:border-zinc-500 hover:bg-zinc-800'}`} 
+             title="Preview (Resolume Style)"
+          >
+            <Monitor className="w-4 h-4" />
+          </button>
+          <button 
+             onClick={() => updateState({ layoutMode: 'fullscreen' })} 
+             className={`p-1.5 rounded transition-colors ${state.layoutMode === 'fullscreen' ? 'text-cyan-400 bg-cyan-900/40 border border-cyan-800' : 'text-zinc-600 bg-black border border-zinc-800 hover:text-white hover:border-zinc-500 hover:bg-zinc-800'}`} 
+             title="Fullscreen Output"
+          >
+            <Maximize className="w-4 h-4" />
+          </button>
+          
+          <div className="w-[1px] h-6 bg-zinc-800 mx-1"></div>
+          
+          <button onClick={reset} className="p-1.5 text-zinc-600 bg-black border border-zinc-800 rounded hover:text-white hover:border-zinc-500 hover:bg-zinc-800 transition-colors" title="Master Reset">
+            <RefreshCcw className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
       {/* RECORD BAR */}
@@ -138,14 +200,288 @@ export function ControlDeck({ state, updateState, reset, hasCameraError }: Contr
                NEURAL AUTOPILOT OVERRIDE
             </h2>
             
-            <div className="flex gap-2 mb-5">
+            <div className="grid grid-cols-4 gap-1 mb-5">
                <TogglePad label="GEO // A" active={state.apConfig.geo} onClick={() => updateApConfig('geo', !state.apConfig.geo)} highlight="red" flex />
                <TogglePad label="CRPT // B" active={state.apConfig.corrupt} onClick={() => updateApConfig('corrupt', !state.apConfig.corrupt)} highlight="red" flex />
                <TogglePad label="CLR // C" active={state.apConfig.color} onClick={() => updateApConfig('color', !state.apConfig.color)} highlight="red" flex />
+               <TogglePad label="TIME // D" active={state.apConfig.timecode} onClick={() => updateApConfig('timecode', !state.apConfig.timecode)} highlight="red" flex />
             </div>
             
             <Fader label="Cycle Frequency (Speed)" min={0.1} max={5} step={0.1} value={state.apConfig.speed} onChange={(v: number) => updateApConfig('speed', v)} unit="x" />
             <Fader label="Entropy (Chaos)" min={0.1} max={1.5} step={0.05} value={state.apConfig.chaos} onChange={(v: number) => updateApConfig('chaos', v)} />
+            
+            {/* LIKELIHOOD RATIO DECK */}
+            <div className="pt-3 border-t border-red-950/40 mt-3 space-y-3">
+               <button 
+                 type="button"
+                 onClick={() => setShowWeights(!showWeights)}
+                 className="w-full flex items-center justify-between text-left cursor-pointer group"
+               >
+                  <span className="text-[10px] text-red-400 uppercase tracking-widest font-mono font-bold flex items-center gap-1.5 select-none">
+                     <Sliders className="w-3.5 h-3.5 text-red-505" />
+                     AUTOPILOT PROBABILITY SLIDERS
+                  </span>
+                  <span className="text-[9px] text-zinc-500 group-hover:text-red-400 transition-colors font-mono uppercase select-none">
+                     {showWeights ? '[ Hide ]' : '[ Customise ]'}
+                  </span>
+               </button>
+
+               {showWeights && (
+                  <div className="space-y-3">
+                     <div className="flex gap-1">
+                        <button
+                           type="button"
+                           onClick={() => {
+                              const maxed: Record<string, number> = {};
+                              AUTOPILOT_EFFECTS.forEach(e => { maxed[e.key] = 2.0; });
+                              updateState({ apWeights: maxed });
+                           }}
+                           className="flex-1 py-1 font-mono text-[8px] uppercase tracking-wider bg-red-950/20 border border-red-900/30 text-red-400 hover:border-red-500 hover:text-red-350 rounded transition-all cursor-pointer text-center select-none"
+                        >
+                           MAX LIKELIHOOD
+                        </button>
+                        <button
+                           type="button"
+                           onClick={() => {
+                              const muted: Record<string, number> = {};
+                              AUTOPILOT_EFFECTS.forEach(e => { muted[e.key] = 0.0; });
+                              updateState({ apWeights: muted });
+                           }}
+                           className="flex-1 py-1 font-mono text-[8px] uppercase tracking-wider bg-black border border-zinc-900 text-zinc-500 hover:border-zinc-700 hover:text-zinc-350 hover:bg-zinc-950 rounded transition-all cursor-pointer text-center select-none"
+                        >
+                           DISABLE ALL
+                        </button>
+                        <button
+                           type="button"
+                           onClick={() => {
+                              updateState({ apWeights: {} });
+                           }}
+                           className="flex-1 py-1 font-mono text-[8px] uppercase tracking-wider bg-zinc-900/50 border border-zinc-805 text-zinc-400 hover:border-zinc-650 hover:text-zinc-200 rounded transition-all cursor-pointer text-center select-none"
+                        >
+                           BALANCED (1x)
+                        </button>
+                     </div>
+
+                     <div className="space-y-2.5 max-h-56 overflow-y-auto custom-scrollbar pr-1 border border-red-950/20 bg-black/40 p-2 rounded shadow-inner">
+                        {AUTOPILOT_EFFECTS.map(({ key, label }) => {
+                           const val = state.apWeights?.[key] !== undefined ? state.apWeights[key] : 1.0;
+                           const percent = Math.round(val * 105);
+                           let pctLabel = `${percent}%`;
+                           
+                           if (val === 0) {
+                              pctLabel = "DISABLED";
+                           } else if (val === 1.0) {
+                              pctLabel = "100% (BALANCED)";
+                           } else if (val === 2.0) {
+                              pctLabel = "200% (MAX FREQ)";
+                           }
+
+                           return (
+                              <div key={key} className="space-y-1">
+                                 <div className="flex justify-between font-mono text-[8.5px] uppercase tracking-wider leading-none select-none">
+                                    <span className="text-zinc-500">{label}</span>
+                                    <span className={val === 0 ? "text-zinc-650 font-normal" : "text-red-400 font-bold"}>
+                                       {pctLabel}
+                                    </span>
+                                 </div>
+                                 <div className={`relative w-full h-3 bg-zinc-950 rounded border transition-colors ${val === 0 ? 'border-zinc-900' : 'border-red-950/40'}`}>
+                                    <div 
+                                       className="absolute top-0 left-0 h-full bg-gradient-to-r from-red-950 to-red-650 pointer-events-none opacity-40 transition-all" 
+                                       style={{ width: `${(val / 2.0) * 100}%` }} 
+                                    />
+                                    <input 
+                                       type="range"
+                                       min="0"
+                                       max="2"
+                                       step="0.1"
+                                       value={val}
+                                       onChange={(e) => {
+                                          updateState({
+                                             apWeights: {
+                                                ...(state.apWeights || {}),
+                                                [key]: parseFloat(e.target.value)
+                                             }
+                                          });
+                                        }}
+                                       className="absolute inset-0 w-full h-full opacity-0 cursor-col-resize z-10"
+                                    />
+                                 </div>
+                              </div>
+                           );
+                        })}
+                     </div>
+                  </div>
+               )}
+            </div>
+
+            {/* DYNAMIC TRIGGERS AND ATTENUATORS ENGINE */}
+            <div className="pt-3 border-t border-red-950/40 mt-3 space-y-3">
+               <button 
+                 type="button"
+                 onClick={() => setShowApDynamics(!showApDynamics)}
+                 className="w-full flex items-center justify-between text-left cursor-pointer group"
+               >
+                  <span className="text-[10px] text-red-400 uppercase tracking-widest font-mono font-bold flex items-center gap-1.5 select-none">
+                     <Cpu className="w-3.5 h-3.5 text-red-500" />
+                     TRIGGERS & DAMPING ENGINE
+                  </span>
+                  <span className="text-[9px] text-zinc-500 group-hover:text-red-400 transition-colors font-mono uppercase select-none">
+                     {showApDynamics ? '[ Hide ]' : '[ Customise ]'}
+                  </span>
+               </button>
+
+               {showApDynamics && (
+                  <div className="space-y-4 border border-red-950/20 bg-black/40 p-2.5 rounded shadow-inner animate-fade-in text-white">
+                     {/* Trigger Source */}
+                     <div className="space-y-1.5">
+                        <span className="text-[8.5px] uppercase tracking-wider text-zinc-500 font-mono font-bold select-none">
+                           Select Trigger Source
+                        </span>
+                        <div className="grid grid-cols-3 gap-1">
+                           {(['mixed', 'volume', 'bass', 'mid-high', 'time', 'chaos'] as const).map((src) => {
+                              const isActive = state.apTriggerSource === src;
+                              return (
+                                 <button
+                                    key={src}
+                                    type="button"
+                                    onClick={() => updateState({ apTriggerSource: src })}
+                                    className={`py-1 px-0.5 font-mono text-[8px] uppercase tracking-wider border rounded transition-all cursor-pointer text-center select-none truncate ${
+                                       isActive 
+                                          ? 'bg-red-950/40 border-red-300 text-red-300 font-bold' 
+                                          : 'bg-zinc-950/60 border-zinc-900 text-zinc-600 hover:border-zinc-700 hover:text-zinc-400'
+                                    }`}
+                                 >
+                                    {src}
+                                 </button>
+                              );
+                           })}
+                        </div>
+                     </div>
+
+                     {/* Dynamic Output Curve Ramp */}
+                     <div className="space-y-1.5">
+                        <span className="text-[8.5px] uppercase tracking-wider text-zinc-500 font-mono font-bold select-none">
+                           Dynamic Output Ramp Curve
+                        </span>
+                        <div className="grid grid-cols-4 gap-1">
+                           {(['none', 'linear', 'exponential', 'sigmoid'] as const).map((ramp) => {
+                              const isActive = state.apRampType === ramp;
+                              return (
+                                 <button
+                                    key={ramp}
+                                    type="button"
+                                    onClick={() => updateState({ apRampType: ramp })}
+                                    className={`py-1 px-0.5 font-mono text-[7.5px] uppercase tracking-wider border rounded transition-all cursor-pointer text-center select-none truncate ${
+                                       isActive 
+                                          ? 'bg-red-950/40 border-red-300 text-red-300 font-bold' 
+                                          : 'bg-zinc-950/60 border-zinc-900 text-zinc-600 hover:border-zinc-700 hover:text-zinc-400'
+                                    }`}
+                                 >
+                                    {ramp}
+                                 </button>
+                              );
+                           })}
+                        </div>
+                     </div>
+
+                     {/* Sensitivity Slider */}
+                     <div className="space-y-1">
+                        <div className="flex justify-between font-mono text-[8.5px] uppercase tracking-wider select-none leading-none">
+                           <span className="text-zinc-500">Gating Threshold (Sensitivity)</span>
+                           <span className="text-red-400 font-bold font-mono">
+                              {Math.round(state.apSensitivity * 100)}%
+                           </span>
+                        </div>
+                        <p className="text-[7.5px] text-zinc-600 font-mono select-none">
+                           Below this signal level, effects fade out and rotation pauses.
+                        </p>
+                        <div className="relative w-full h-3 bg-zinc-950 rounded border border-red-950/30">
+                           <div 
+                              className="absolute top-0 left-0 h-full bg-gradient-to-r from-red-950 to-red-650 pointer-events-none opacity-40 transition-all" 
+                              style={{ width: `${state.apSensitivity * 100}%` }} 
+                           />
+                           <input 
+                              type="range"
+                              min="0.0"
+                              max="0.8"
+                              step="0.05"
+                              value={state.apSensitivity}
+                              onChange={(e) => updateState({ apSensitivity: parseFloat(e.target.value) })}
+                              className="absolute inset-0 w-full h-full opacity-0 cursor-col-resize z-10"
+                           />
+                        </div>
+                     </div>
+
+                     {/* Subdue Depth Slider */}
+                     <div className="space-y-1">
+                        <div className="flex justify-between font-mono text-[8.5px] uppercase tracking-wider select-none leading-none">
+                           <span className="text-zinc-500">Subdue Capacity (Floor level)</span>
+                           <span className="text-red-400 font-bold font-mono">
+                              {state.apSubdueDepth === 0 ? "0% (MUTED)" : `${Math.round(state.apSubdueDepth * 100)}%`}
+                           </span>
+                        </div>
+                        <p className="text-[7.5px] text-zinc-600 font-mono select-none">
+                           The leftover intensity of autonomic effects when signal drops to 0.
+                        </p>
+                        <div className="relative w-full h-3 bg-zinc-950 rounded border border-red-950/30">
+                           <div 
+                              className="absolute top-0 left-0 h-full bg-gradient-to-r from-red-950 to-red-650 pointer-events-none opacity-40 transition-all" 
+                              style={{ width: `${state.apSubdueDepth * 100}%` }} 
+                           />
+                           <input 
+                              type="range"
+                              min="0.0"
+                              max="0.5"
+                              step="0.05"
+                              value={state.apSubdueDepth}
+                              onChange={(e) => updateState({ apSubdueDepth: parseFloat(e.target.value) })}
+                              className="absolute inset-0 w-full h-full opacity-0 cursor-col-resize z-10"
+                           />
+                        </div>
+                     </div>
+
+                     {/* Real-time scaling toggle */}
+                     <div className="flex items-center justify-between pt-1 font-mono text-[8.5px] uppercase tracking-wider select-none leading-none">
+                        <span className="text-zinc-500">Scale Energy In Real-Time</span>
+                        <button
+                           type="button"
+                           onClick={() => updateState({ apModulateIntensity: !state.apModulateIntensity })}
+                           className={`px-3 py-1 font-mono text-[8px] uppercase tracking-wider border rounded select-none transition-all cursor-pointer ${
+                              state.apModulateIntensity 
+                                 ? 'bg-red-950/40 border-red-500 text-red-300 font-bold' 
+                                 : 'bg-zinc-950 border-zinc-900 text-zinc-600 hover:border-zinc-700'
+                           }`}
+                        >
+                           {state.apModulateIntensity ? 'ENABLED' : 'DISABLED'}
+                        </button>
+                     </div>
+                  </div>
+               )}
+            </div>
+            
+            <div className="pt-3 border-t border-red-950/40 mt-3 space-y-2">
+               <div className="flex items-center justify-between">
+                  <span className="text-[9px] text-red-400 uppercase tracking-widest font-mono">
+                     Autopilot Clip Rotation
+                  </span>
+                  <button 
+                     onClick={() => updateState({ autoSwitchClips: !state.autoSwitchClips })}
+                     className={`px-3 py-1 font-mono text-[8px] uppercase tracking-wider border rounded select-none transition-all cursor-pointer ${
+                        state.autoSwitchClips 
+                          ? 'bg-red-950 text-red-350 border-red-500/50 shadow-[0_0_8px_rgba(239,68,68,0.15)] animate-pulse font-bold' 
+                          : 'bg-black text-zinc-650 border-zinc-900 hover:border-zinc-805'
+                     }`}
+                  >
+                     {state.autoSwitchClips ? "AUTO CYCLE ACTIVE" : "LOCK CURRENT CLIP"}
+                  </button>
+               </div>
+               {state.autoSwitchClips && (
+                  <div className="text-[8px] font-mono text-zinc-550 uppercase tracking-widest leading-relaxed">
+                     • ROTATION TRIGGERS ON PHRASE SEQUENCE CYCLE<br/>
+                     • HIGH-ENTROPY BEAT DROP TRANSLATIONS DETECTED
+                  </div>
+               )}
+            </div>
          </div>
       )}
 
@@ -173,28 +509,127 @@ export function ControlDeck({ state, updateState, reset, hasCameraError }: Contr
           </div>
 
           {state.sourceType === 'clip' && (
-            <div className="relative overflow-hidden">
-              <button className="w-full h-10 flex items-center justify-center gap-2 text-[10px] uppercase font-mono tracking-widest border border-zinc-700 bg-zinc-800/50 text-zinc-300 hover:bg-purple-900/30 hover:border-purple-500 hover:text-purple-400 transition-colors rounded-sm cursor-pointer">
-                <Upload className="w-4 h-4" />
-                {state.clipUrl || state.imageUrl ? 'Load New Media' : 'Select Video / Audio / Image'}
-              </button>
-              <input
-                type="file"
-                accept={VJ_FILE_ACCEPT}
-                multiple
-                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                onChange={(e) => {
-                  const list = e.target.files;
-                  if (list && list.length > 0) {
-                    const arr: File[] = [];
-                    for (let i = 0; i < list.length; i++) arr.push(list[i]);
-                    const { patch } = routeFiles(arr);
-                    if (Object.keys(patch).length > 0) updateState(patch);
-                  }
-                  e.target.value = '';
-                }}
-              />
-            </div>
+             <div className="mt-4 space-y-4">
+                <div className="flex border border-zinc-800 rounded bg-black/40 overflow-hidden divide-x divide-zinc-800">
+                    <button 
+                       onClick={() => updateState({ clipAudio: !state.clipAudio })}
+                       className={`flex-1 flex items-center justify-center gap-2 py-2 text-[10px] uppercase font-mono tracking-widest transition-all ${state.clipAudio ? 'bg-purple-900/40 text-purple-300' : 'text-zinc-500 hover:bg-zinc-900'}`}
+                    >
+                       CLIP AUDIO {state.clipAudio ? 'ON' : 'OFF'}
+                    </button>
+                </div>
+                <div className="relative overflow-hidden">
+                  <button className="w-full h-10 flex items-center justify-center gap-2 text-[10px] uppercase font-mono tracking-widest border border-dashed border-zinc-700 bg-zinc-800/10 text-zinc-400 hover:bg-purple-950/20 hover:border-purple-500 hover:text-purple-300 transition-all rounded-sm cursor-pointer">
+                    <Upload className="w-4 h-4" />
+                    SELECT & IMPORT VIDEO CLIPS
+                  </button>
+                  <input
+                    type="file"
+                    accept="video/*"
+                    multiple
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer text-[0px]"
+                    onChange={(e) => {
+                      const files = e.target.files;
+                      if (files && files.length > 0) {
+                        const newClips = Array.from(files).map((file: any) => {
+                          const url = URL.createObjectURL(file as File);
+                          const id = `clip-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+                          const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
+                          return {
+                            id,
+                            name: file.name.length > 25 ? file.name.substring(0, 21) + "..." : file.name,
+                            url,
+                            size: `${sizeMB} MB`
+                          };
+                        });
+                        
+                        const mergedBucket = [...(state.videoBucket || []), ...newClips];
+                        updateState({
+                          videoBucket: mergedBucket,
+                          activeClipId: newClips[newClips.length - 1].id,
+                          clipUrl: newClips[newClips.length - 1].url,
+                          sourceType: 'clip'
+                        });
+                        
+                        // Clear the input so identical files can be selected again if needed
+                        e.target.value = '';
+                      }
+                    }}
+                  />
+                </div>
+
+                {state.videoBucket && state.videoBucket.length > 0 && (
+                  <div className="border border-zinc-800/70 bg-black/60 p-3 rounded-sm shadow-inner">
+                    <div className="flex justify-between items-center mb-2 pb-1.5 border-b border-zinc-900">
+                      <span className="text-[9px] text-zinc-500 uppercase tracking-widest font-mono">
+                        ARCHIVE BIN / CLIPS ({state.videoBucket.length})
+                      </span>
+                      <button 
+                         onClick={() => updateState({ videoBucket: [], activeClipId: null, clipUrl: null })} 
+                         className="text-[8px] text-zinc-600 hover:text-red-400 uppercase font-mono tracking-wider transition-colors"
+                      >
+                         Purge Bin
+                      </button>
+                    </div>
+                    <div className="space-y-1 max-h-48 overflow-y-auto custom-scrollbar">
+                      {state.videoBucket.map((clip) => {
+                        const isActive = state.activeClipId === clip.id;
+                        return (
+                          <div 
+                            key={clip.id} 
+                            className={`flex items-center justify-between p-2 rounded transition-all ${
+                              isActive 
+                                ? 'bg-purple-950/20 border border-purple-500/50 text-purple-300 shadow-[0_0_10px_rgba(168,85,247,0.1)]' 
+                                : 'bg-zinc-950/80 border border-zinc-905 text-zinc-500 hover:border-zinc-800 hover:text-zinc-300'
+                            }`}
+                          >
+                            <button 
+                              onClick={() => {
+                                updateState({ activeClipId: clip.id, clipUrl: clip.url, sourceType: 'clip' });
+                              }}
+                              className="flex-1 flex flex-col min-w-0 pr-2 align-middle text-left cursor-pointer"
+                            >
+                              <span className="text-[10px] font-mono truncate font-medium tracking-wide">
+                                {clip.name}
+                              </span>
+                              {clip.size && (
+                                <span className="text-[8px] font-mono text-zinc-650">
+                                  SIZE: {clip.size}
+                                </span>
+                              )}
+                            </button>
+                            {state.videoBucket.length > 1 && (
+                              <button 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const filtered = state.videoBucket.filter(c => c.id !== clip.id);
+                                  let nextActive = state.activeClipId;
+                                  let nextUrl = state.clipUrl;
+                                  if (clip.id === state.activeClipId) {
+                                    nextActive = filtered[0]?.id || null;
+                                    nextUrl = filtered[0]?.url || null;
+                                  }
+                                  updateState({
+                                    videoBucket: filtered,
+                                    activeClipId: nextActive,
+                                    clipUrl: nextUrl
+                                  });
+                                }}
+                                className="p-1 hover:bg-red-950/30 text-zinc-650 hover:text-red-400 rounded transition-colors"
+                                title="Delete clip"
+                              >
+                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                </svg>
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+             </div>
           )}
         </section>
 
@@ -269,11 +704,12 @@ export function ControlDeck({ state, updateState, reset, hasCameraError }: Contr
       
       {/* DECK D */}
       <div className="p-5 flex-1 space-y-8 border-t border-zinc-900 border-dashed">
-        <section>
+        <section className={`transition-all duration-500 ${apTimecode ? 'opacity-30 pointer-events-none' : 'opacity-100'}`}>
           <h2 className="text-[10px] text-zinc-400 uppercase tracking-widest font-mono border-b border-zinc-800 pb-2 mb-4 flex items-center justify-between">
             <span className="flex items-center gap-2">
               <Activity className="w-3 h-3 text-emerald-500" /> DECK D // TIMECODE
             </span>
+            {apTimecode && <span className="text-red-500 animate-pulse">[AUTO]</span>}
           </h2>
           
           <div className="grid grid-cols-2 gap-2 mb-4">
