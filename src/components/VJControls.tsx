@@ -46,8 +46,8 @@ export function ControlDeck({ state, updateState, reset, hasCameraError }: Contr
     };
     
     return (
-      <div className="flex flex-col mb-4 group relative">
-        <div className="flex justify-between items-center text-[10px] text-zinc-500 uppercase tracking-widest font-mono mb-1.5 focus-within:text-cyan-400">
+      <div className="flex flex-col mb-2.5 group relative">
+        <div className="flex justify-between items-center text-[10px] text-zinc-500 uppercase tracking-widest font-mono mb-1 focus-within:text-cyan-400">
           <div className="flex items-center gap-2 cursor-pointer" onDoubleClick={handleDoubleClick} title="Double click to reset">
             <span className="group-hover:text-cyan-400 transition-colors">{label}</span>
           </div>
@@ -66,7 +66,7 @@ export function ControlDeck({ state, updateState, reset, hasCameraError }: Contr
              <span className="text-zinc-300">{typeof value === 'number' ? value.toFixed(step >= 1 ? 0 : 2) : value}{unit}</span>
           </div>
         </div>
-        <div className={`relative w-full h-6 bg-black rounded-sm overflow-hidden cursor-crosshair border shadow-inner transition-colors ${apActiveGlobally && apWeight > 0 ? 'border-red-900/50 opacity-70' : 'border-zinc-800 group-hover:border-zinc-700'}`}>
+        <div className={`relative w-full h-5 bg-black rounded-sm overflow-hidden cursor-crosshair border shadow-inner transition-colors ${apActiveGlobally && apWeight > 0 ? 'border-red-900/50 opacity-70' : 'border-zinc-800 group-hover:border-zinc-700'}`}>
            <div 
              className="absolute top-0 left-0 h-full bg-gradient-to-r from-cyan-900 to-cyan-500 border-r border-cyan-300 pointer-events-none" 
              style={{ width: `${percentage}%` }} 
@@ -105,9 +105,9 @@ export function ControlDeck({ state, updateState, reset, hasCameraError }: Contr
         )}
         <button
            onClick={onClick}
-           className={`h-10 px-2 text-[10px] uppercase font-mono tracking-widest border transition-all select-none rounded-sm w-full ${
-              active 
-                ? activeColors[highlight] 
+           className={`h-7 px-2 text-[10px] uppercase font-mono tracking-widest border transition-all select-none rounded-sm w-full ${
+              active
+                ? activeColors[highlight]
                 : `bg-black border-zinc-800 hover:border-zinc-500 transition-colors ${apActiveGlobally && apWeight > 0 ? 'text-red-900/50' : 'text-zinc-600 hover:text-zinc-400'}`
            }`}
         >
@@ -129,78 +129,80 @@ export function ControlDeck({ state, updateState, reset, hasCameraError }: Contr
 
   return (
     <div className="h-full bg-[#111] border-l border-zinc-800 flex flex-col items-stretch overflow-y-auto w-full shrink-0 custom-scrollbar">
-      {/* Header */}
-      <div className="p-4 border-b border-zinc-800 flex items-center justify-between sticky top-0 bg-[#111] z-50 shadow-md">
-        <div className="flex flex-col">
-          <h1 className="text-white font-mono font-bold tracking-widest text-lg flex items-center gap-2">
-            <Activity className="w-5 h-5 text-cyan-500" />
+      {/* Header — tightened: smaller title font, single line of padding,
+          subtitle sits flush under title. Layout-mode + reset buttons
+          shrink to icon-fit. */}
+      <div className="px-3 py-1.5 border-b border-zinc-800 flex items-center justify-between sticky top-0 bg-[#111] z-50 shadow-md">
+        <div className="flex flex-col leading-tight">
+          <h1 className="text-white font-mono font-bold tracking-widest text-[13px] flex items-center gap-1.5">
+            <Activity className="w-3.5 h-3.5 text-cyan-500" />
             LUMINA // OMEGA
           </h1>
-          <span className={`text-[10px] uppercase tracking-[0.2em] mt-1 ${hasCameraError ? 'text-red-500' : 'text-zinc-500'}`}>
+          <span className={`text-[8px] uppercase tracking-[0.18em] mt-0.5 ${hasCameraError ? 'text-red-500' : 'text-zinc-500'}`}>
             {hasCameraError ? 'CAMERA OFFLINE // SYS ERR' : 'OPTO-SENSOR ACTIVE // LIVE'}
           </span>
         </div>
-        <div className="flex items-center gap-1">
-          <button 
-             onClick={() => updateState({ layoutMode: 'standard' })} 
-             className={`p-1.5 rounded transition-colors ${state.layoutMode === 'standard' ? 'text-cyan-400 bg-cyan-900/40 border border-cyan-800' : 'text-zinc-600 bg-black border border-zinc-800 hover:text-white hover:border-zinc-500 hover:bg-zinc-800'}`} 
+        <div className="flex items-center gap-0.5">
+          <button
+             onClick={() => updateState({ layoutMode: 'standard' })}
+             className={`p-1 rounded transition-colors ${state.layoutMode === 'standard' ? 'text-cyan-400 bg-cyan-900/40 border border-cyan-800' : 'text-zinc-600 bg-black border border-zinc-800 hover:text-white hover:border-zinc-500 hover:bg-zinc-800'}`}
              title="Standard Layout"
           >
-            <LayoutPanelLeft className="w-4 h-4" />
+            <LayoutPanelLeft className="w-3.5 h-3.5" />
           </button>
-          <button 
-             onClick={() => updateState({ layoutMode: 'split' })} 
-             className={`p-1.5 rounded transition-colors ${state.layoutMode === 'split' ? 'text-cyan-400 bg-cyan-900/40 border border-cyan-800' : 'text-zinc-600 bg-black border border-zinc-800 hover:text-white hover:border-zinc-500 hover:bg-zinc-800'}`} 
+          <button
+             onClick={() => updateState({ layoutMode: 'split' })}
+             className={`p-1 rounded transition-colors ${state.layoutMode === 'split' ? 'text-cyan-400 bg-cyan-900/40 border border-cyan-800' : 'text-zinc-600 bg-black border border-zinc-800 hover:text-white hover:border-zinc-500 hover:bg-zinc-800'}`}
              title="50/50 Split Layout"
           >
-            <Columns className="w-4 h-4" />
+            <Columns className="w-3.5 h-3.5" />
           </button>
-          <button 
-             onClick={() => updateState({ layoutMode: 'preview' })} 
-             className={`p-1.5 rounded transition-colors ${state.layoutMode === 'preview' ? 'text-cyan-400 bg-cyan-900/40 border border-cyan-800' : 'text-zinc-600 bg-black border border-zinc-800 hover:text-white hover:border-zinc-500 hover:bg-zinc-800'}`} 
+          <button
+             onClick={() => updateState({ layoutMode: 'preview' })}
+             className={`p-1 rounded transition-colors ${state.layoutMode === 'preview' ? 'text-cyan-400 bg-cyan-900/40 border border-cyan-800' : 'text-zinc-600 bg-black border border-zinc-800 hover:text-white hover:border-zinc-500 hover:bg-zinc-800'}`}
              title="Preview (Resolume Style)"
           >
-            <Monitor className="w-4 h-4" />
+            <Monitor className="w-3.5 h-3.5" />
           </button>
-          <button 
-             onClick={() => updateState({ layoutMode: 'fullscreen' })} 
-             className={`p-1.5 rounded transition-colors ${state.layoutMode === 'fullscreen' ? 'text-cyan-400 bg-cyan-900/40 border border-cyan-800' : 'text-zinc-600 bg-black border border-zinc-800 hover:text-white hover:border-zinc-500 hover:bg-zinc-800'}`} 
+          <button
+             onClick={() => updateState({ layoutMode: 'fullscreen' })}
+             className={`p-1 rounded transition-colors ${state.layoutMode === 'fullscreen' ? 'text-cyan-400 bg-cyan-900/40 border border-cyan-800' : 'text-zinc-600 bg-black border border-zinc-800 hover:text-white hover:border-zinc-500 hover:bg-zinc-800'}`}
              title="Fullscreen Output"
           >
-            <Maximize className="w-4 h-4" />
+            <Maximize className="w-3.5 h-3.5" />
           </button>
-          
-          <div className="w-[1px] h-6 bg-zinc-800 mx-1"></div>
-          
-          <button onClick={reset} className="p-1.5 text-zinc-600 bg-black border border-zinc-800 rounded hover:text-white hover:border-zinc-500 hover:bg-zinc-800 transition-colors" title="Master Reset">
-            <RefreshCcw className="w-4 h-4" />
+
+          <div className="w-px h-5 bg-zinc-800 mx-0.5"></div>
+
+          <button onClick={reset} className="p-1 text-zinc-600 bg-black border border-zinc-800 rounded hover:text-white hover:border-zinc-500 hover:bg-zinc-800 transition-colors" title="Master Reset">
+            <RefreshCcw className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
 
       {/* RECORD BAR */}
-      <div className="bg-zinc-950 border-b border-zinc-800 p-3 flex justify-center">
-        <button 
+      <div className="bg-zinc-950 border-b border-zinc-800 px-3 py-1.5 flex justify-center">
+        <button
           onClick={() => updateState({ recording: !state.recording })}
-          className={`flex items-center gap-2 px-4 py-2 text-[10px] uppercase font-mono tracking-widest border rounded transition-all ${
-            state.recording 
+          className={`flex items-center gap-1.5 px-3 py-1 text-[9px] uppercase font-mono tracking-widest border rounded transition-all ${
+            state.recording
               ? 'bg-red-900/30 border-red-500 text-red-300 shadow-[0_0_15px_rgba(239,68,68,0.5)] animate-pulse'
               : 'bg-black border-zinc-700 text-zinc-400 hover:border-red-500 hover:text-red-400'
           }`}
         >
-          <div className={`w-2.5 h-2.5 rounded-full ${state.recording ? 'bg-red-500' : 'bg-red-900/50'}`}></div>
+          <div className={`w-2 h-2 rounded-full ${state.recording ? 'bg-red-500' : 'bg-red-900/50'}`}></div>
           {state.recording ? 'RECORDING... (CLICK TO STOP & SAVE)' : 'REC EXPORT TO FILE'}
         </button>
       </div>
       
       {apActive && (
-         <div className="m-4 mb-0 p-4 border border-red-900/50 bg-red-950/20 rounded shadow-[inset_0_0_20px_rgba(239,68,68,0.05)]">
-            <h2 className="text-red-500 font-mono text-[11px] uppercase tracking-widest mb-4 flex items-center gap-2 font-bold">
+         <div className="mx-3 mt-3 mb-0 p-3 border border-red-900/50 bg-red-950/20 rounded shadow-[inset_0_0_20px_rgba(239,68,68,0.05)]">
+            <h2 className="text-red-500 font-mono text-[11px] uppercase tracking-widest mb-3 flex items-center gap-2 font-bold">
                <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse shadow-[0_0_10px_rgba(239,68,68,0.8)]"></span>
                NEURAL AUTOPILOT OVERRIDE
             </h2>
             
-            <div className="grid grid-cols-4 gap-1 mb-5">
+            <div className="grid grid-cols-4 gap-1 mb-3">
                <TogglePad label="GEO // A" active={state.apConfig.geo} onClick={() => updateApConfig('geo', !state.apConfig.geo)} highlight="red" flex />
                <TogglePad label="CRPT // B" active={state.apConfig.corrupt} onClick={() => updateApConfig('corrupt', !state.apConfig.corrupt)} highlight="red" flex />
                <TogglePad label="CLR // C" active={state.apConfig.color} onClick={() => updateApConfig('color', !state.apConfig.color)} highlight="red" flex />
@@ -485,10 +487,10 @@ export function ControlDeck({ state, updateState, reset, hasCameraError }: Contr
          </div>
       )}
 
-      <div className="p-5 flex-1 space-y-8">
+      <div className="px-3 py-3 flex-1 space-y-4">
         {/* INPUT DECK */}
         <section>
-          <h2 className="text-[10px] text-zinc-400 uppercase tracking-widest font-mono border-b border-zinc-800 pb-2 mb-4 flex items-center gap-2">
+          <h2 className="text-[10px] text-zinc-400 uppercase tracking-widest font-mono border-b border-zinc-800 pb-1 mb-2 flex items-center gap-2">
             <Radio className="w-3 h-3 text-fuchsia-500" /> SOURCE // MATRIX
           </h2>
           <div className="grid grid-cols-2 gap-2 mb-4">
@@ -635,20 +637,20 @@ export function ControlDeck({ state, updateState, reset, hasCameraError }: Contr
 
         {/* DECK A */}
         <section className={`transition-all duration-500 ${apGeo ? 'opacity-30 pointer-events-none' : 'opacity-100'}`}>
-          <h2 className="text-[10px] text-zinc-400 uppercase tracking-widest font-mono border-b border-zinc-800 pb-2 mb-4 flex items-center justify-between">
+          <h2 className="text-[10px] text-zinc-400 uppercase tracking-widest font-mono border-b border-zinc-800 pb-1 mb-2 flex items-center justify-between">
             <span className="flex items-center gap-2">
               <Hash className="w-3 h-3 text-cyan-500" /> DECK A // GEOMETRICS
             </span>
             {apGeo && <span className="text-red-500 animate-pulse">[AUTO]</span>}
           </h2>
           
-          <div className="grid grid-cols-3 gap-2 mb-5">
+          <div className="grid grid-cols-3 gap-2 mb-3">
              <TogglePad paramKey="mirrorX" label="Mirror X" active={state.mirrorX} onClick={() => updateState({ mirrorX: !state.mirrorX })} />
              <TogglePad paramKey="mirrorY" label="Mirror Y" active={state.mirrorY} onClick={() => updateState({ mirrorY: !state.mirrorY })} />
              <TogglePad paramKey="kaleido" label="Kaleido" active={state.kaleidoscope} onClick={() => updateState({ kaleidoscope: !state.kaleidoscope })} />
           </div>
           
-          <div className="grid grid-cols-2 gap-2 mb-5">
+          <div className="grid grid-cols-2 gap-2 mb-3">
              <TogglePad paramKey="equirect" label="HDR/EQUI" active={state.equirect} onClick={() => updateState({ equirect: !state.equirect })} />
              <TogglePad paramKey="softEdges" label="Soft Edges" active={state.softEdges} onClick={() => updateState({ softEdges: !state.softEdges })} />
              <TogglePad paramKey="stereoMode" label="SBS 3D" active={state.stereoMode === 'sbs'} onClick={() => updateState({ stereoMode: state.stereoMode === 'sbs' ? 'none' : 'sbs' })} />
@@ -662,7 +664,7 @@ export function ControlDeck({ state, updateState, reset, hasCameraError }: Contr
 
         {/* DECK B */}
         <section className={`transition-all duration-500 ${apCorrupt ? 'opacity-30 pointer-events-none' : 'opacity-100'}`}>
-          <h2 className="text-[10px] text-zinc-400 uppercase tracking-widest font-mono border-b border-zinc-800 pb-2 mb-4 flex items-center justify-between">
+          <h2 className="text-[10px] text-zinc-400 uppercase tracking-widest font-mono border-b border-zinc-800 pb-1 mb-2 flex items-center justify-between">
             <span className="flex items-center gap-2">
               <Cpu className="w-3 h-3 text-red-500" /> DECK B // CORRUPTION
             </span>
@@ -681,7 +683,7 @@ export function ControlDeck({ state, updateState, reset, hasCameraError }: Contr
 
         {/* DECK C */}
         <section className={`transition-all duration-500 ${apColor ? 'opacity-30 pointer-events-none' : 'opacity-100'}`}>
-          <h2 className="text-[10px] text-zinc-400 uppercase tracking-widest font-mono border-b border-zinc-800 pb-2 mb-4 flex items-center justify-between">
+          <h2 className="text-[10px] text-zinc-400 uppercase tracking-widest font-mono border-b border-zinc-800 pb-1 mb-2 flex items-center justify-between">
             <span className="flex items-center gap-2">
               <Sliders className="w-3 h-3 text-yellow-500" /> DECK C // CHROMATICS
             </span>
@@ -692,7 +694,7 @@ export function ControlDeck({ state, updateState, reset, hasCameraError }: Contr
           <Fader paramKey="contrast" label="Contrast" min={0} max={300} step={1} value={state.contrast} unit="%" onChange={(v: number) => updateState({ contrast: v })} />
           <Fader paramKey="brightness" label="Brightness" min={0} max={200} step={1} value={state.brightness} unit="%" onChange={(v: number) => updateState({ brightness: v })} />
           
-          <div className="grid grid-cols-5 gap-2 mt-5">
+          <div className="grid grid-cols-5 gap-2 mt-3">
              <TogglePad paramKey="invert" label="INV" active={state.invert} onClick={() => updateState({ invert: !state.invert })} />
              <TogglePad paramKey="edgeDetect" label="EDG" active={state.edgeDetect} onClick={() => updateState({ edgeDetect: !state.edgeDetect })} />
              <TogglePad label="CRT" active={state.crt} onClick={() => updateState({ crt: !state.crt })} />
@@ -703,9 +705,9 @@ export function ControlDeck({ state, updateState, reset, hasCameraError }: Contr
       </div>
       
       {/* DECK D */}
-      <div className="p-5 flex-1 space-y-8 border-t border-zinc-900 border-dashed">
+      <div className="px-3 py-3 flex-1 space-y-4 border-t border-zinc-900 border-dashed">
         <section className={`transition-all duration-500 ${apTimecode ? 'opacity-30 pointer-events-none' : 'opacity-100'}`}>
-          <h2 className="text-[10px] text-zinc-400 uppercase tracking-widest font-mono border-b border-zinc-800 pb-2 mb-4 flex items-center justify-between">
+          <h2 className="text-[10px] text-zinc-400 uppercase tracking-widest font-mono border-b border-zinc-800 pb-1 mb-2 flex items-center justify-between">
             <span className="flex items-center gap-2">
               <Activity className="w-3 h-3 text-emerald-500" /> DECK D // TIMECODE
             </span>
@@ -726,8 +728,8 @@ export function ControlDeck({ state, updateState, reset, hasCameraError }: Contr
       </div>
 
       {/* SEQUENCER BLOCK */}
-      <div className="p-5 bg-[#0a0a0a] border-t border-cyan-900/30 shadow-[0_-10px_20px_rgba(0,0,0,0.5)] z-10 sticky bottom-0">
-         <div className="flex justify-between items-center mb-4">
+      <div className="px-3 py-2.5 bg-[#0a0a0a] border-t border-cyan-900/30 shadow-[0_-10px_20px_rgba(0,0,0,0.5)] z-10 sticky bottom-0">
+         <div className="flex justify-between items-center mb-2">
            <h3 className="text-[10px] font-mono text-cyan-500 tracking-widest flex items-center gap-2 font-bold">
              <span className="w-2 h-2 rounded-full bg-cyan-500 animate-pulse shadow-[0_0_8px_rgba(6,182,212,0.8)]"></span>
              MASTER SYNC BUS
