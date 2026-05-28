@@ -1,3 +1,10 @@
+export interface PlaylistEntry {
+  id: string;
+  url: string;
+  label: string;
+  kind: 'audio' | 'video';
+}
+
 export interface VJState {
   // Input Source — 'clip' covers video AND audio files (audio plays
   // through the same <video> element which feeds the audio analyzer;
@@ -15,6 +22,13 @@ export interface VJState {
   /** Static image to render behind the visualizer canvas. */
   imageUrl?: string | null;
   imageLabel?: string | null;
+  /** Audio/video playlist — queue of loaded clips. The element at
+   *  `playlistIndex` is the one currently playing (mirrored to
+   *  clipUrl + clipLabel). `playlistAutoAdvance` controls whether
+   *  the next track auto-plays on `ended`. */
+  playlist?: PlaylistEntry[];
+  playlistIndex?: number;
+  playlistAutoAdvance?: boolean;
 
   // Color & Optics
   hue: number;
@@ -23,7 +37,7 @@ export interface VJState {
   brightness: number;
   invert: boolean;
   edgeDetect: boolean;
-  
+
   // Geometry
   mirrorX: boolean;
   mirrorY: boolean;
@@ -32,7 +46,7 @@ export interface VJState {
   equirect: boolean;
   stereoMode: 'none' | 'sbs' | 'tb';
   softEdges: boolean;
-  
+
   // Distortion & FX
   feedback: number;
   glitch: number;
@@ -43,12 +57,12 @@ export interface VJState {
   strobe: number;
   pixelate: number;
   waveWarp: number;
-  
+
   // Post-Processing
   scanlines: boolean;
   vignette: boolean;
   crt: boolean;
-  
+
   // Sequencing
   bpm: number;
   autoLFO: boolean;
@@ -56,7 +70,7 @@ export interface VJState {
   autoPilot: boolean;
   recording: boolean;
   aspectRatio: string;
-  
+
   // Timecode
   playbackSpeed: number;
   reversePlayback: boolean;
@@ -64,7 +78,7 @@ export interface VJState {
   echoTrails: number;
   slitScan: number;
   timeDisplace: number;
-  
+
   // Autopilot specific configuration
   apConfig: {
     geo: boolean;
@@ -83,6 +97,9 @@ export const DEFAULT_VJ_STATE: VJState = {
   clipKind: null,
   imageUrl: null,
   imageLabel: null,
+  playlist: [],
+  playlistIndex: 0,
+  playlistAutoAdvance: true,
 
   hue: 0,
   saturation: 150,
@@ -90,7 +107,7 @@ export const DEFAULT_VJ_STATE: VJState = {
   brightness: 100,
   invert: false,
   edgeDetect: false,
-  
+
   mirrorX: false,
   mirrorY: false,
   kaleidoscope: false,
@@ -98,7 +115,7 @@ export const DEFAULT_VJ_STATE: VJState = {
   equirect: false,
   stereoMode: 'none',
   softEdges: true,
-  
+
   feedback: 0.85,
   glitch: 0,
   rgbGhost: 0,
@@ -108,25 +125,25 @@ export const DEFAULT_VJ_STATE: VJState = {
   strobe: 0,
   pixelate: 0,
   waveWarp: 0,
-  
+
   scanlines: true,
   vignette: true,
   crt: true,
-  
+
   bpm: 128,
   autoLFO: false,
   audioReactive: false,
   autoPilot: false,
   recording: false,
   aspectRatio: 'free',
-  
+
   playbackSpeed: 1.0,
   reversePlayback: false,
   posterizeTime: 60,
   echoTrails: 0,
   slitScan: 0,
   timeDisplace: 0,
-  
+
   apConfig: {
     geo: true,
     corrupt: true,
@@ -134,6 +151,5 @@ export const DEFAULT_VJ_STATE: VJState = {
     speed: 1.0,
     chaos: 0.5,
   },
-  apWeights: {}
+  apWeights: {},
 };
-

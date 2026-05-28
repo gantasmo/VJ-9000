@@ -18,7 +18,7 @@
  * easily bypassed — and a non-video file then froze the renderer when
  * <video>.play() rejected and nothing caught it.
  */
-import type { VJState } from './types';
+import type { VJState, PlaylistEntry } from './types';
 
 export type FileRoute =
   | { kind: 'video'; patch: Partial<VJState> }
@@ -78,3 +78,57 @@ export function routeFile(file: File): FileRoute {
 
 /** Accept= attribute that covers everything routeFile() handles. */
 export const VJ_FILE_ACCEPT = 'video/*,audio/*,image/*';
+
+/** Multi-file router. Splits files by kind and returns a patch that
+ *  loads the first hit of each kind. If multiple audio/video files
+ *  are passed in, they become the playlist — first becomes active,
+ *  the rest queue up behind. Images aren't queued (only one backdrop
+ *  at a time); the last image wins. */
+export function routeFiles(files: File[]): {
+  patch: Partial<VJState>;
+  errors: Array<{ mime: string; name: string }>;
+} {
+  const errors: Array<{ mime: string; name: string }> = [];
+  const playlist: PlaylistEntry[] = [];
+  let imagePatch: Partial<VJState> | null = null;
+  let autoReactive = false;
+
+  let id = 0;
+  for (const file of files) {
+    const route = routeFile(file);
+    if (route.kind === 'unsupported') {
+      errors.push({ mime: route.mime, name: route.name });
+      continue;
+    }
+    if (route.kind === 'image') {
+      imagePatch = route.patch;
+      continue;
+    }
+    // audio or video → playlist entry
+    const url = route.patch.clipUrl!;
+    const label = route.patch.clipLabel ?? file.name;
+    playlist.push({
+      id: `pl-${Date.now()}-${id++}`,
+      url,
+      label,
+      kind: route.kind === 'audio' ? 'audio' : 'video',
+    });
+    if (route.kind === 'audio') autoReactive = true;
+  }
+
+  const patch: Partial<VJState> = {};
+  if (imagePatch) Object.assign(patch, imagePatch);
+  if (playlist.length > 0) {
+    const first = playlist[0];
+    Object.assign(patch, {
+      clipUrl: first.url,
+      clipLabel: first.label,
+      clipKind: first.kind,
+      sourceType: 'clip' as const,
+      playlist,
+      playlistIndex: 0,
+    });
+    if (autoReactive) patch.audioReactive = true;
+  }
+  return { patch, errors };
+}

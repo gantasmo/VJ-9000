@@ -1,7 +1,7 @@
 import React from 'react';
 import { VJState } from '../types';
 import { Activity, RefreshCcw, Upload, Sliders, Cpu, Radio, Hash, Video } from 'lucide-react';
-import { routeFile, VJ_FILE_ACCEPT } from '../fileRouter';
+import { routeFiles, VJ_FILE_ACCEPT } from '../fileRouter';
 
 interface ControlsProps {
   state: VJState;
@@ -181,12 +181,15 @@ export function ControlDeck({ state, updateState, reset, hasCameraError }: Contr
               <input
                 type="file"
                 accept={VJ_FILE_ACCEPT}
+                multiple
                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                 onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) {
-                    const route = routeFile(file);
-                    if (route.kind !== 'unsupported') updateState(route.patch);
+                  const list = e.target.files;
+                  if (list && list.length > 0) {
+                    const arr: File[] = [];
+                    for (let i = 0; i < list.length; i++) arr.push(list[i]);
+                    const { patch } = routeFiles(arr);
+                    if (Object.keys(patch).length > 0) updateState(patch);
                   }
                   e.target.value = '';
                 }}

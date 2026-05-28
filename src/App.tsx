@@ -1,11 +1,11 @@
-import { useState } from 'react';
-import { VJState, DEFAULT_VJ_STATE } from './types';
+import { useState, useEffect } from 'react';
+import { VJState, DEFAULT_VJ_STATE, PlaylistEntry } from './types';
 import { useMedia } from './useMedia';
 import { useAudioAnalyzer } from './useAudioAnalyzer';
 import { VideoOutput } from './components/VideoOutput';
 import { ControlDeck } from './components/VJControls';
-import { AlertTriangle, Film, Upload, X as XIcon } from 'lucide-react';
-import { routeFile, VJ_FILE_ACCEPT } from './fileRouter';
+import { AlertTriangle, Film, Upload, X as XIcon, SkipForward, SkipBack, ListMusic } from 'lucide-react';
+import { routeFiles, VJ_FILE_ACCEPT } from './fileRouter';
 
 export default function App() {
   const [vjState, setVjState] = useState<VJState>(DEFAULT_VJ_STATE);
@@ -17,37 +17,96 @@ export default function App() {
     setVjState((prev) => ({ ...prev, ...updates }));
   };
 
-  /** Single file-router entry point used by the welcome-state file
+  /** Multi-file router entry point used by the welcome-state file
    *  picker, the controls deck picker, and the drop handler. Detects
-   *  video / audio / image; rejects anything else with a soft error
+   *  video / audio / image per file; multi-select queues audio/video
+   *  into the playlist. Rejects anything else with a soft error
    *  banner instead of crashing the renderer. */
-  const handleFile = (file: File | null) => {
-    if (!file) return;
-    const route = routeFile(file);
-    if (route.kind === 'unsupported') {
+  const handleFiles = (files: FileList | File[] | null) => {
+    if (!files) return;
+    const arr = Array.from(files);
+    if (arr.length === 0) return;
+    const { patch, errors } = routeFiles(arr);
+    if (errors.length > 0) {
+      const first = errors[0];
       setRouterError(
-        `Unsupported file type: ${route.mime || 'unknown'} (${route.name}). Use video / audio / image.`,
+        `${errors.length} file${errors.length === 1 ? '' : 's'} skipped — unsupported type (e.g. ${first.mime || '?'} / ${first.name}). Use video / audio / image.`,
       );
-      window.setTimeout(() => setRouterError(null), 4000);
-      return;
+      window.setTimeout(() => setRouterError(null), 4500);
+    } else {
+      setRouterError(null);
     }
-    setRouterError(null);
-    updateState(route.patch);
+    if (Object.keys(patch).length > 0) {
+      // If we're appending audio/video to an existing playlist
+      // instead of replacing, prepend the existing entries.
+      const incoming = patch.playlist as PlaylistEntry[] | undefined;
+      const existing = vjState.playlist ?? [];
+      if (incoming && incoming.length > 0 && existing.length > 0 && vjState.clipUrl) {
+        // Append behaviour: keep current playing, queue new tracks.
+        const merged = [...existing, ...incoming];
+        updateState({ ...patch, playlist: merged, playlistIndex: vjState.playlistIndex ?? 0, clipUrl: vjState.clipUrl, clipLabel: vjState.clipLabel, clipKind: vjState.clipKind });
+      } else {
+        updateState(patch);
+      }
+    }
   };
+
+  /** Switch the active clip to the entry at `idx` in the playlist. */
+  const playPlaylistEntry = (idx: number) => {
+    const pl = vjState.playlist ?? [];
+    if (idx < 0 || idx >= pl.length) return;
+    const e = pl[idx];
+    updateState({
+      clipUrl: e.url,
+      clipLabel: e.label,
+      clipKind: e.kind,
+      sourceType: 'clip',
+      playlistIndex: idx,
+    });
+  };
+
+  const playlistNext = () => {
+    const pl = vjState.playlist ?? [];
+    if (pl.length === 0) return;
+    const i = (vjState.playlistIndex ?? 0) + 1;
+    playPlaylistEntry(i >= pl.length ? 0 : i);
+  };
+
+  const playlistPrev = () => {
+    const pl = vjState.playlist ?? [];
+    if (pl.length === 0) return;
+    const i = (vjState.playlistIndex ?? 0) - 1;
+    playPlaylistEntry(i < 0 ? pl.length - 1 : i);
+  };
+
+  // Auto-advance: when the current clip ends, hop to the next entry
+  // in the playlist. The video element loops by default for single
+  // clips; with a playlist of 2+ we disable loop and listen for
+  // 'ended' to advance.
+  useEffect(() => {
+    const pl = vjState.playlist ?? [];
+    if (!vjState.playlistAutoAdvance || pl.length < 2) return;
+    const id = window.setInterval(() => {
+      // Poll the underlying <video> for 'ended' since useMedia owns
+      // the ref and we don't want to plumb listeners up.
+      const v = document.querySelector('video');
+      if (v && v.ended) playlistNext();
+    }, 250);
+    return () => window.clearInterval(id);
+  }, [vjState.playlist, vjState.playlistAutoAdvance, vjState.playlistIndex, playlistNext]);
 
   const resetState = () => setVjState(DEFAULT_VJ_STATE);
 
   return (
     <div
-      className="w-full h-screen flex bg-black text-white overflow-hidden font-sans"
+      className="w-full h-screen flex flex-col md:flex-row bg-black text-white overflow-hidden font-sans"
       onDragOver={(e) => {
         e.preventDefault();
         e.dataTransfer.dropEffect = 'copy';
       }}
       onDrop={(e) => {
         e.preventDefault();
-        const file = e.dataTransfer.files?.[0];
-        if (file) handleFile(file);
+        handleFiles(e.dataTransfer.files);
       }}
     >
 
@@ -108,6 +167,66 @@ export default function App() {
           </div>
         )}
 
+        {/* Playlist strip — shown when 2+ audio/video entries queued.
+            Lives at the bottom of the canvas; click an entry to jump,
+            or use prev/next buttons. Auto-advance toggle on the right. */}
+        {(vjState.playlist?.length ?? 0) >= 2 && (
+          <div className="absolute bottom-2 left-2 right-2 z-30 bg-black/70 backdrop-blur-sm border border-cyan-500/40 rounded p-2 flex items-center gap-2 text-[10px] font-mono uppercase tracking-widest">
+            <ListMusic className="w-3.5 h-3.5 text-cyan-300 shrink-0" />
+            <span className="text-cyan-300 font-black">PLAYLIST</span>
+            <span className="text-zinc-500">
+              {(vjState.playlistIndex ?? 0) + 1} / {vjState.playlist?.length}
+            </span>
+            <button
+              onClick={playlistPrev}
+              className="p-1 rounded border border-white/10 hover:bg-white/5 text-zinc-400 hover:text-zinc-100"
+              title="Previous track"
+            >
+              <SkipBack className="w-3 h-3" />
+            </button>
+            <button
+              onClick={playlistNext}
+              className="p-1 rounded border border-white/10 hover:bg-white/5 text-zinc-400 hover:text-zinc-100"
+              title="Next track"
+            >
+              <SkipForward className="w-3 h-3" />
+            </button>
+            <div className="flex-1 min-w-0 overflow-x-auto no-scrollbar flex items-center gap-1">
+              {vjState.playlist?.map((e, i) => (
+                <button
+                  key={e.id}
+                  onClick={() => playPlaylistEntry(i)}
+                  className={`px-2 py-0.5 rounded border whitespace-nowrap text-[9px] tracking-wider truncate max-w-40 ${
+                    i === (vjState.playlistIndex ?? 0)
+                      ? 'border-cyan-400/60 bg-cyan-500/20 text-cyan-100'
+                      : 'border-white/10 text-zinc-400 hover:text-zinc-100 hover:bg-white/5'
+                  }`}
+                  title={e.label}
+                >
+                  <span className="text-cyan-500/70 mr-1">{e.kind === 'audio' ? '♪' : '▶'}</span>
+                  {e.label.length > 24 ? e.label.slice(0, 24) + '…' : e.label}
+                </button>
+              ))}
+            </div>
+            <label className="flex items-center gap-1 cursor-pointer shrink-0 text-zinc-500 hover:text-zinc-200">
+              <input
+                type="checkbox"
+                checked={vjState.playlistAutoAdvance ?? true}
+                onChange={(e) => updateState({ playlistAutoAdvance: e.target.checked })}
+                className="accent-cyan-500"
+              />
+              <span>AUTO</span>
+            </label>
+            <button
+              onClick={() => updateState({ playlist: [], playlistIndex: 0 })}
+              className="p-1 rounded border border-rose-500/30 hover:bg-rose-500/10 text-rose-400 hover:text-rose-200"
+              title="Clear playlist"
+            >
+              <XIcon className="w-3 h-3" />
+            </button>
+          </div>
+        )}
+
         {isInitializing && (
           <div className="absolute inset-0 flex items-center justify-center flex-col text-zinc-500 font-mono tracking-widest uppercase text-sm bg-black z-30">
             <div className="w-8 h-8 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin mb-6"></div>
@@ -130,9 +249,10 @@ export default function App() {
               <input
                 type="file"
                 accept={VJ_FILE_ACCEPT}
+                multiple
                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                 onChange={(e) => {
-                  handleFile(e.target.files?.[0] ?? null);
+                  handleFiles(e.target.files);
                   e.target.value = '';
                 }}
               />
@@ -157,12 +277,16 @@ export default function App() {
         )}
       </main>
 
-      {/* Controller Bus */}
-      <aside className="w-96 flex-shrink-0 relative z-50 shadow-[-10px_0_30px_rgba(0,0,0,0.8)] border-l border-cyan-900/40">
-        <ControlDeck 
-          state={vjState} 
-          updateState={updateState} 
-          reset={resetState} 
+      {/* Controller Bus — full-width strip below the canvas on narrow
+          viewports (< md), inline right-side panel on wider screens.
+          h-2/5 below md gives the canvas the top 60% of the screen so
+          the visualizer remains the focus; the controls scroll inside
+          their own region. */}
+      <aside className="w-full md:w-96 h-2/5 md:h-auto flex-shrink-0 relative z-50 shadow-[-10px_0_30px_rgba(0,0,0,0.8)] border-t md:border-t-0 md:border-l border-cyan-900/40 overflow-hidden">
+        <ControlDeck
+          state={vjState}
+          updateState={updateState}
+          reset={resetState}
           hasCameraError={!!error && vjState.sourceType === 'camera'}
         />
       </aside>
