@@ -24,24 +24,10 @@ export function useMedia(sourceType: 'camera' | 'clip', clipUrl: string | null) 
         if (clipUrl) {
           video.src = clipUrl;
           video.loop = true;
-          // Catch all the ways a clip can fail: unsupported codec,
-          // corrupted file, expired blob URL, NotAllowedError on
-          // autoplay-blocked browsers. Show an error string instead
-          // of letting the exception propagate (which previously took
-          // the VJ renderer down with it).
-          const onErr = () => {
-            if (!active) return;
-            const code = video.error?.code;
-            const msg = video.error?.message || `MediaError code ${code ?? '?'}`;
-            setError(`Video Decode Failure: ${msg}`);
-          };
-          video.onerror = onErr;
-          video.play().catch((e) => {
-            if (active) setError('Video Decode Failure: ' + (e?.message ?? String(e)));
+          video.play().catch(e => {
+            if (active) setError("Video Decode Failure: " + e.message);
           });
           if (active) {
-            // Clear any prior error optimistically; onerror above will
-            // set it again if the new clip is broken.
             setError(null);
             setIsInitializing(false);
           }

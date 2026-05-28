@@ -6,9 +6,10 @@ interface VideoOutputProps {
   vjState: VJState;
   videoRef: React.RefObject<HTMLVideoElement>;
   getAudioLevels: () => AudioLevels;
+  onAutopilotSwitchClip?: () => void;
 }
 
-export function VideoOutput({ vjState, videoRef, getAudioLevels }: VideoOutputProps) {
+export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwitchClip }: VideoOutputProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const recordCanvasRef = useRef<HTMLCanvasElement>(null);
   
@@ -16,6 +17,11 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels }: VideoOutputPr
   useEffect(() => {
     stateRef.current = vjState;
   }, [vjState]);
+
+  const onSwitchClipRef = useRef(onAutopilotSwitchClip);
+  useEffect(() => {
+    onSwitchClipRef.current = onAutopilotSwitchClip;
+  }, [onAutopilotSwitchClip]);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
@@ -25,22 +31,37 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels }: VideoOutputPr
         recordCanvasRef.current = document.createElement('canvas');
     }
     
-    if (vjState.recording) {
+    let active = true;
+    let localMicStream: MediaStream | null = null;
+    let audioCtx: AudioContext | null = null;
+    
+    const startRecording = async () => {
       if (!recordCanvasRef.current) return;
-      
       const stream = recordCanvasRef.current.captureStream(30);
       
-      // Attempt to mux audio tracks into the recording stream
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      audioCtx = new AudioContextClass();
+      const dest = audioCtx.createMediaStreamDestination();
+      let hasAudio = false;
+
+      // 1. Try Video Audio (if clip audio is on, or if camera has audio)
       const videoEl = videoRef.current;
-      if (videoEl) {
+      if (videoEl && !videoEl.muted) {
           try {
               if (videoEl.srcObject && videoEl.srcObject instanceof MediaStream) {
-                  videoEl.srcObject.getAudioTracks().forEach(track => stream.addTrack(track));
+                  const tracks = (videoEl.srcObject as MediaStream).getAudioTracks();
+                  if (tracks.length > 0) {
+                      const source = audioCtx.createMediaStreamSource(videoEl.srcObject as MediaStream);
+                      source.connect(dest);
+                      hasAudio = true;
+                  }
               } else {
                  const anyVid = videoEl as any;
                  const capturedStream = anyVid.captureStream ? anyVid.captureStream() : anyVid.mozCaptureStream ? anyVid.mozCaptureStream() : null;
-                 if (capturedStream) {
-                     capturedStream.getAudioTracks().forEach((track: MediaStreamTrack) => stream.addTrack(track));
+                 if (capturedStream && capturedStream.getAudioTracks().length > 0) {
+                     const source = audioCtx.createMediaStreamSource(capturedStream);
+                     source.connect(dest);
+                     hasAudio = true;
                  }
               }
           } catch(e) {
@@ -48,8 +69,32 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels }: VideoOutputPr
           }
       }
 
+      // 2. Try Mic Audio explicitly if we don't have video audio (e.g. they want to record the live set music)
+      if (!hasAudio || vjState.audioReactive) {
+         try {
+             localMicStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+             if (localMicStream && localMicStream.getAudioTracks().length > 0) {
+                 const source = audioCtx.createMediaStreamSource(localMicStream);
+                 source.connect(dest);
+                 hasAudio = true;
+             }
+         } catch(e) {
+             console.warn("Could not get mic access for recording", e);
+         }
+      }
+
+      if (!active) {
+         // Cleanup if recording stopped while we were waiting for mic
+         if (localMicStream) localMicStream.getTracks().forEach(t => t.stop());
+         if (audioCtx) audioCtx.close();
+         return;
+      }
+
+      if (hasAudio) {
+         dest.stream.getAudioTracks().forEach(track => stream.addTrack(track));
+      }
+
       try {
-        // webm is standard for most browsers
         const options = { mimeType: 'video/webm; codecs=vp9' };
         const recorder = new MediaRecorder(stream, options);
         mediaRecorderRef.current = recorder;
@@ -78,10 +123,24 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels }: VideoOutputPr
       } catch (e) {
         console.error('MediaRecorder error', e);
       }
+    };
+
+    if (vjState.recording) {
+      startRecording();
     } else {
       if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
         mediaRecorderRef.current.stop();
       }
+      if (localMicStream) {
+          localMicStream.getTracks().forEach(t => t.stop());
+      }
+      if (audioCtx) {
+          audioCtx.close().catch(() => {});
+      }
+    }
+    
+    return () => {
+       active = false;
     }
   }, [vjState.recording]);
 
@@ -117,7 +176,7 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels }: VideoOutputPr
     // --- AUTOPILOT Brain State ---
     let apTimer = 0;
     let apState = {
-       hue: 0, sat: 150, contrast: 130, bright: 100, feedback: 0,
+       hue: 0, sat: 100, contrast: 100, bright: 100, feedback: 0,
        kaleido: false, mirrorX: false, mirrorY: false, invert: false, edgeDetect: false,
        pixelate: 0, waveWarp: 0, rgbSplit: 0, glitch: 0,
        tiling: 1, equirect: false, stereoMode: 'none',
@@ -126,7 +185,8 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels }: VideoOutputPr
        dropCooldown: 0,
     };
     let apTargets = {
-       hue: Math.random() * 360, sat: 150, contrast: 130, feedback: 0.5,
+       cycleLength: 6.0,
+       hue: Math.random() * 360, sat: 100, contrast: 100, feedback: 0.5,
        pixelate: 0, waveWarp: 0, rgbSplit: 0, glitch: 0,
        chromaAb: 0, backskip: 0, 
        playbackSpeed: 1, posterizeTime: 60, echoTrails: 0, slitScan: 0, timeDisplace: 0,
@@ -197,41 +257,151 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels }: VideoOutputPr
       bassSmooth = bassSmooth * 0.9 + powBass * 0.1;
       
       if (s.autoPilot) {
-         const { speed, chaos, geo, corrupt, color } = s.apConfig;
+         const { speed, chaos, geo, corrupt, color, timecode } = s.apConfig;
          
          const aw = (k: string) => s.apWeights && s.apWeights[k] !== undefined ? s.apWeights[k] : 1.0;
          
-         apTimer += (1/60) * speed;
-         if (apTimer > 6.0) { // Cycle length modifies via speed naturally
+         // 1. DYNAMIC TRIGGER SIGNAL CALCULATION
+         let activeTriggerLevel = 0.0;
+         const timeMs = performance.now();
+         const timeRamp = 0.5 + 0.5 * Math.sin(timeMs * 0.001 * speed);
+         const rawChaosSignal = 0.5 + 0.5 * Math.sin(timeMs * 0.002) * Math.cos(timeMs * 0.0007);
+         
+         switch(s.apTriggerSource) {
+            case 'volume':
+               activeTriggerLevel = s.audioReactive ? Math.min(1.0, audio.volume * 5.0) : timeRamp;
+               break;
+            case 'bass':
+               activeTriggerLevel = s.audioReactive ? Math.min(1.0, audio.bass * 2.5) : Math.pow(timeRamp, 1.5);
+               break;
+            case 'mid-high':
+               activeTriggerLevel = s.audioReactive ? Math.min(1.0, (audio.mid + audio.high) * 2.5) : Math.abs(Math.sin(timeMs * 0.0015));
+               break;
+            case 'time':
+               activeTriggerLevel = timeRamp;
+               break;
+            case 'chaos':
+               activeTriggerLevel = Math.max(0, Math.min(1, rawChaosSignal + (Math.random() - 0.5) * chaos));
+               break;
+            case 'mixed':
+            default:
+               if (s.audioReactive) {
+                  activeTriggerLevel = Math.min(1.0, (audio.volume * 2.0 + audio.bass * 2.0) / 2.0);
+               } else {
+                  activeTriggerLevel = 0.4 * timeRamp + 0.6 * rawChaosSignal;
+               }
+               break;
+         }
+
+         // 2. RAMPS & OPTIONAL SIGNAL TRANSLATIONS
+         let modScalar = activeTriggerLevel;
+         if (s.apRampType === 'none') {
+            modScalar = 1.0;
+         } else if (s.apRampType === 'exponential') {
+            modScalar = Math.pow(activeTriggerLevel, 2.0);
+         } else if (s.apRampType === 'sigmoid') {
+            modScalar = 1.0 / (1.0 + Math.exp(-((activeTriggerLevel - 0.5) * 10.0)));
+         }
+
+         // 3. SENSITIVITY ATTENUATION / SYSTEM SUBDUE
+         let gateFactor = 1.0;
+         let timerSpeedMultiplier = 1.0;
+         
+         if (activeTriggerLevel < s.apSensitivity) {
+            const ratio = s.apSensitivity > 0 ? (activeTriggerLevel / s.apSensitivity) : 0;
+            // Scale smoothly down to subdued minimum
+            gateFactor = s.apSubdueDepth + (1.0 - s.apSubdueDepth) * ratio;
+            timerSpeedMultiplier = ratio;
+            
+            // If we are below half of the threshold, fully pause trigger cycle and switching
+            if (ratio < 0.5) {
+               timerSpeedMultiplier = 0.0;
+            }
+         }
+
+         const apIntensityMultiplier = s.apModulateIntensity ? (gateFactor * modScalar) : gateFactor;
+         const isSubdued = gateFactor < 0.25;
+         
+         apTimer += (1/60) * speed * timerSpeedMultiplier;
+         if (apTimer > apTargets.cycleLength && s.autoSwitchClips && onSwitchClipRef.current) {
+            setTimeout(() => {
+               onSwitchClipRef.current?.();
+            }, 0);
+         }
+         if (apTimer > apTargets.cycleLength) { 
             apTimer = 0;
-            apTargets.hue = Math.random() * 360;
-            apTargets.sat = 70 + Math.random() * 230 * chaos;
+            // Variable cycle length based on chaos (3s to 12s roughly)
+            apTargets.cycleLength = 3.0 + Math.random() * 6.0 * (1.5 - chaos * 0.5);
+
+            // Tasteful FX Selection - pick 1 or 2 focal effects per cycle
+            const focalFX = Math.random();
+            const fxLevel = Math.random() * chaos + 0.1; // Ensure somewhat visible if selected
+
+            // --- Reset all targets back to baseline to prevent messy overlap ---
+            apTargets.pixelate = 0;
+            apTargets.waveWarp = 0;
+            apTargets.rgbSplit = 0;
+            apTargets.glitch = 0;
+            apTargets.chromaAb = 0;
+            apTargets.backskip = 0;
+            apTargets.playbackSpeed = 1;
+            apTargets.posterizeTime = 60;
+            apTargets.echoTrails = 0;
+            apTargets.slitScan = 0;
+            apTargets.timeDisplace = 0;
+            apTargets.feedback = 0;
+            
+            // Turn off most booleans
+            apState.kaleido = false;
+            apState.mirrorX = false;
+            apState.mirrorY = false;
+            apState.edgeDetect = false;
+            apState.equirect = false;
+            apState.stereoMode = 'none';
+            apState.tiling = 1;
+            apState.reversePlayback = false;
+            apState.invert = false;
+            
+            // Gently drift colors over time instead of frantic jumping
+            apTargets.hue = (apState.hue + 30 + Math.random() * 120) % 360; 
+            apTargets.sat = 90 + Math.random() * 210 * chaos;
             apTargets.contrast = 100 + Math.random() * 150 * chaos;
-            apTargets.feedback = aw('feedback') > 0 && Math.random() > (1 - 0.7*chaos*aw('feedback')) ? Math.random() * 0.95 : 0;
-            apTargets.pixelate = aw('pixelate') > 0 && Math.random() > (1 - 0.5*chaos*aw('pixelate')) ? Math.random() * 0.25 * chaos : 0;
-            apTargets.waveWarp = aw('waveWarp') > 0 && Math.random() > (1 - 0.6*chaos*aw('waveWarp')) ? Math.random() * 0.4 * chaos : 0;
-            apTargets.rgbSplit = aw('rgbSplit') > 0 && Math.random() > (1 - 0.6*chaos*aw('rgbSplit')) ? Math.random() * 0.6 * chaos : 0;
-            apTargets.glitch = aw('glitch') > 0 && Math.random() > (1 - 0.4*chaos*aw('glitch')) ? Math.random() * 0.4 : 0;
+
+            // Group 1: Geometry / Space (20%)
+            if (focalFX < 0.20) {
+               if (aw('kaleido') > 0 && Math.random() > 0.4) apState.kaleido = true;
+               else if (aw('tiling') > 0 && Math.random() > 0.3) apState.tiling = Math.floor(1 + Math.random() * 3 * fxLevel);
+               if (aw('waveWarp') > 0) apTargets.waveWarp = 0.15 * fxLevel * aw('waveWarp');
+            } 
+            // Group 2: Temporal Smear / Stutter (20%)
+            else if (focalFX < 0.40) {
+               if (aw('posterizeTime') > 0) apTargets.posterizeTime = Math.floor(8 + Math.random() * 20); // Not too low
+               if (aw('echoTrails') > 0) apTargets.echoTrails = 8 * fxLevel * aw('echoTrails');
+            } 
+            // Group 3: Spatial Distortion (20%)
+            else if (focalFX < 0.60) {
+               if (aw('pixelate') > 0) apTargets.pixelate = 0.15 * fxLevel * aw('pixelate');
+               if (aw('timeDisplace') > 0) apTargets.timeDisplace = 0.3 * fxLevel * aw('timeDisplace');
+            } 
+            // Group 4: Digital Corruption (20%)
+            else if (focalFX < 0.80) {
+               if (aw('chromaAb') > 0) apTargets.chromaAb = 0.8 * fxLevel * aw('chromaAb');
+               if (aw('rgbSplit') > 0) apTargets.rgbSplit = 0.3 * fxLevel * aw('rgbSplit');
+               if (aw('glitch') > 0 && Math.random() > 0.5) apTargets.glitch = 0.2 * fxLevel * aw('glitch');
+            } 
+            // Group 5: Playback Manipulation (20%)
+            else {
+               if (aw('playbackSpeed') > 0) apTargets.playbackSpeed = 0.4 + Math.random() * 1.6 * fxLevel;
+               if (aw('reversePlayback') > 0 && Math.random() > 0.6) apState.reversePlayback = true;
+               if (aw('backskip') > 0 && Math.random() > 0.5) apTargets.backskip = 0.4 * fxLevel * aw('backskip');
+               if (aw('slitScan') > 0 && Math.random() > 0.5) apTargets.slitScan = 0.3 * fxLevel * aw('slitScan');
+            }
             
-            apTargets.chromaAb = aw('chromaAb') > 0 && Math.random() > (1 - 0.6*chaos*aw('chromaAb')) ? Math.random() * 1.5 * chaos : 0;
-            apTargets.backskip = aw('backskip') > 0 && Math.random() > (1 - 0.4*chaos*aw('backskip')) ? Math.random() * 0.8 * chaos : 0;
-            
-            apTargets.playbackSpeed = aw('playbackSpeed') > 0 && Math.random() > (1 - 0.4*chaos*aw('playbackSpeed')) ? 0.2 + Math.random() * 1.8 : 1;
-            apState.reversePlayback = aw('reversePlayback') > 0 && Math.random() > (1 - 0.3*chaos*aw('reversePlayback'));
-            apTargets.posterizeTime = aw('posterizeTime') > 0 && Math.random() > (1 - 0.5*chaos*aw('posterizeTime')) ? Math.floor(4 + Math.random() * 26) : 60;
-            apTargets.echoTrails = aw('echoTrails') > 0 && Math.random() > (1 - 0.6*chaos*aw('echoTrails')) ? Math.random() * 25 * chaos : 0;
-            apTargets.slitScan = aw('slitScan') > 0 && Math.random() > (1 - 0.5*chaos*aw('slitScan')) ? Math.random() * 0.6 * chaos : 0;
-            apTargets.timeDisplace = aw('timeDisplace') > 0 && Math.random() > (1 - 0.5*chaos*aw('timeDisplace')) ? Math.random() * 0.6 * chaos : 0;
-            apState.softEdges = aw('softEdges') > 0 && Math.random() > 1.0 - (0.5 * aw('softEdges'));
-            
-            apState.kaleido = aw('kaleido') > 0 && Math.random() > (1 - 0.7*chaos*aw('kaleido'));
-            apState.mirrorX = aw('mirrorX') > 0 && Math.random() > 1.0 - (0.6 * aw('mirrorX'));
-            apState.mirrorY = aw('mirrorY') > 0 && Math.random() > 1.0 - (0.4 * aw('mirrorY'));
-            apState.edgeDetect = aw('edgeDetect') > 0 && Math.random() > (1 - 0.4*chaos*aw('edgeDetect'));
-            apState.equirect = aw('equirect') > 0 && Math.random() > (1 - 0.4*chaos*aw('equirect'));
-            
-            apState.stereoMode = aw('stereoMode') > 0 && Math.random() > (1 - 0.2*chaos*aw('stereoMode')) ? (Math.random() > 0.5 ? 'sbs' : 'tb') : 'none';
-            apState.tiling = aw('tiling') > 0 && Math.random() > (1 - 0.5*chaos*aw('tiling')) ? Math.floor(1 + Math.random() * 4 * chaos) : 1;
+            // Global independent tasteful sprinkles
+            if (aw('feedback') > 0 && Math.random() > 0.8) apTargets.feedback = Math.random() * 0.85 * fxLevel * aw('feedback');
+            if (aw('edgeDetect') > 0 && chaos > 0.7 && Math.random() > 0.85) apState.edgeDetect = true;
+            if (aw('mirrorX') > 0 && Math.random() > 0.85) apState.mirrorX = true;
+            if (aw('mirrorY') > 0 && Math.random() > 0.85) apState.mirrorY = true;
          }
          
          // Smooth Interpolation
@@ -256,41 +426,59 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels }: VideoOutputPr
          let autoPilotDrop = false;
          if (powBass > 0.6 && powBass > bassSmooth * 2.5 && apState.dropCooldown <= 0) {
              autoPilotDrop = true;
-             apState.dropCooldown = 1.5;
+             apState.dropCooldown = 1.0 + Math.random() * 2.0; // Dynamic drop cooldown
          }
+         // Decrease cooldown strictly based on actual time, so drops aren't suppressed if subdued
          if (apState.dropCooldown > 0) apState.dropCooldown -= 1/60;
          
-         if (autoPilotDrop) {
-            apState.invert = !apState.invert;
-            apState.feedback = 0.95; 
-            apTargets.feedback = 0;  // rapid drain
-            if (Math.random() > 0.5) apState.kaleido = !apState.kaleido;
-            if (Math.random() > 0.5) apState.edgeDetect = !apState.edgeDetect;
-            if (Math.random() > 0.7) apState.tiling = Math.floor(1 + Math.random() * 4);
-            currentStrobe = 1.0;     
+         if (autoPilotDrop && !isSubdued) { // Only do massive drops if not highly subdued
+            if (s.autoSwitchClips && Math.random() < 0.6 && onSwitchClipRef.current) {
+               setTimeout(() => {
+                  onSwitchClipRef.current?.();
+               }, 0);
+            }
+            apTimer = apTargets.cycleLength - 0.2; // Force a new cycle soon after the drop hits to resolve it
+            currentStrobe = 1.0; 
             
-            apState.waveWarp = 1.0 * chaos; 
-            apTargets.waveWarp = 0;
-            apState.rgbSplit = 0.8 * chaos;
-            apTargets.rgbSplit = 0;
-            apState.glitch = 0.8 * chaos;
-            apTargets.glitch = 0;
+            // Tasteful Drops - Choose 1 Major Effect Type for the Drop rather than blasting all of them
+            const dropStyle = Math.random();
+            const hit = chaos; // Intensity of drop
             
-            apState.chromaAb = 1.2 * chaos;
-            apTargets.chromaAb = 0;
-            apState.backskip = 0.9 * chaos;
-            apTargets.backskip = 0;
-            apState.playbackSpeed = 2.5 * chaos;
-            apTargets.playbackSpeed = 1;
-            apState.posterizeTime = Math.max(1, 15 - Math.floor(10 * chaos));
-            apTargets.posterizeTime = 60;
-            apState.reversePlayback = true;
-            apState.slitScan = 0.5 * chaos;
-            apTargets.slitScan = 0;
-            apState.timeDisplace = 0.6 * chaos;
-            apTargets.timeDisplace = 0;
-            apState.echoTrails = 15 * chaos;
-            apTargets.echoTrails = 0;
+            // Reset state to avoid crossover mess during drops
+            apTargets.waveWarp = 0; apTargets.rgbSplit = 0; apTargets.glitch = 0;
+            apTargets.chromaAb = 0; apTargets.backskip = 0; apTargets.slitScan = 0; 
+            apTargets.timeDisplace = 0; apTargets.echoTrails = 0; apTargets.playbackSpeed = 1;
+
+            if (dropStyle < 0.20 && aw('feedback') > 0) {
+               // Heavy Reverb / Delay drop
+               apState.feedback = 0.95 * aw('feedback'); 
+               apTargets.feedback = 0; 
+               if (aw('echoTrails') > 0) {
+                   apState.echoTrails = 12 * hit * aw('echoTrails');
+                   apTargets.echoTrails = 0;
+               }
+            } else if (dropStyle < 0.40 && aw('chromaAb') > 0) {
+               // Aggressive Color Invert & Zoom
+               if (aw('invert') > 0) apState.invert = !apState.invert;
+               if (aw('edgeDetect') > 0 && Math.random() > 0.5) apState.edgeDetect = true;
+               apState.chromaAb = 1.5 * hit * aw('chromaAb');
+               apTargets.chromaAb = 0;
+            } else if (dropStyle < 0.60 && (aw('glitch') > 0 || aw('rgbSplit') > 0)) {
+               // Glitch & Tape Stop
+               if (aw('glitch') > 0) { apState.glitch = 0.8 * hit * aw('glitch'); apTargets.glitch = 0; }
+               if (aw('rgbSplit') > 0) { apState.rgbSplit = 0.8 * hit * aw('rgbSplit'); apTargets.rgbSplit = 0; }
+               if (aw('playbackSpeed') > 0) apState.playbackSpeed = 3.0 * hit * aw('playbackSpeed');
+            } else if (dropStyle < 0.80 && aw('kaleido') > 0) {
+               // Geo Shatter
+               apState.kaleido = true;
+               if (aw('tiling') > 0) apState.tiling = Math.floor(1 + Math.random() * 3);
+               if (aw('waveWarp') > 0) { apState.waveWarp = 0.8 * hit * aw('waveWarp'); apTargets.waveWarp = 0; }
+            } else {
+               // Time Smear 
+               if (aw('slitScan') > 0) { apState.slitScan = 0.6 * hit * aw('slitScan'); apTargets.slitScan = 0; }
+               if (aw('timeDisplace') > 0) { apState.timeDisplace = 0.7 * hit * aw('timeDisplace'); apTargets.timeDisplace = 0; }
+               if (aw('reversePlayback') > 0) apState.reversePlayback = true;
+            }
          }
          
          // Helper to check if autopilot is allowed to control this param
@@ -301,34 +489,41 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels }: VideoOutputPr
              if (am('hue')) currentHue = apState.hue;
              if (am('sat')) currentSat = apState.sat;
              if (am('contrast')) currentContrast = apState.contrast;
-             if (am('invert')) currentInvert = apState.invert;
-             if (am('edgeDetect')) currentEdge = apState.edgeDetect;
+             if (am('invert')) currentInvert = isSubdued ? false : apState.invert;
+             if (am('edgeDetect')) currentEdge = isSubdued ? false : apState.edgeDetect;
          }
          if (geo) {
-             if (am('feedback')) currentFeedback = apState.feedback; // counts as geometric time-mapping
-             if (am('kaleido')) currentKaleido = apState.kaleido;
-             if (am('mirrorX')) currentMirrorX = apState.mirrorX;
-             if (am('mirrorY')) currentMirrorY = apState.mirrorY;
-             if (am('tiling')) currentTiling = apState.tiling;
-             if (am('equirect')) currentEquirect = apState.equirect;
-             if (am('stereoMode')) currentStereo = apState.stereoMode as 'none'|'sbs'|'tb';
+             if (am('feedback')) currentFeedback = apState.feedback * apIntensityMultiplier;
+             if (am('kaleido')) currentKaleido = isSubdued ? false : apState.kaleido;
+             if (am('mirrorX')) currentMirrorX = isSubdued ? false : apState.mirrorX;
+             if (am('mirrorY')) currentMirrorY = isSubdued ? false : apState.mirrorY;
+             if (am('tiling')) currentTiling = isSubdued ? 1 : apState.tiling;
+             if (am('equirect')) currentEquirect = isSubdued ? false : apState.equirect;
+             if (am('stereoMode')) currentStereo = isSubdued ? 'none' : (apState.stereoMode as 'none'|'sbs'|'tb');
          }
          if (corrupt) {
-             if (am('pixelate')) currentPixelate = Math.max(currentPixelate, apState.pixelate);
-             if (am('waveWarp')) currentWave = Math.max(currentWave, apState.waveWarp);
-             if (am('rgbSplit')) currentSplit = Math.max(currentSplit, apState.rgbSplit);
-             if (am('glitch')) currentGlitch = Math.max(currentGlitch, apState.glitch);
-             if (am('chromaAb')) currentChromaAb = Math.max(currentChromaAb, apState.chromaAb);
-             if (am('backskip')) currentBackskip = Math.max(currentBackskip, apState.backskip);
-             
-             if (am('playbackSpeed')) currentPlaybackSpeed *= apState.playbackSpeed;
-             if (am('reversePlayback')) currentReversePlayback = currentReversePlayback !== apState.reversePlayback;
+             if (am('pixelate')) currentPixelate = Math.max(currentPixelate, apState.pixelate * apIntensityMultiplier);
+             if (am('waveWarp')) currentWave = Math.max(currentWave, apState.waveWarp * apIntensityMultiplier);
+             if (am('rgbSplit')) currentSplit = Math.max(currentSplit, apState.rgbSplit * apIntensityMultiplier);
+             if (am('glitch')) currentGlitch = Math.max(currentGlitch, apState.glitch * apIntensityMultiplier);
+             if (am('chromaAb')) currentChromaAb = Math.max(currentChromaAb, apState.chromaAb * apIntensityMultiplier);
+             if (am('backskip')) currentBackskip = Math.max(currentBackskip, apState.backskip * apIntensityMultiplier);
+         }
+         if (timecode) {
+             if (am('playbackSpeed')) {
+                const targetSpeed = isSubdued ? 1.0 : apState.playbackSpeed;
+                currentPlaybackSpeed *= (1.0 + (targetSpeed - 1.0) * apIntensityMultiplier);
+             }
+             if (am('reversePlayback')) currentReversePlayback = isSubdued ? false : (currentReversePlayback !== apState.reversePlayback);
 
-             if (am('posterizeTime')) currentPosterizeTime = Math.min(currentPosterizeTime, apState.posterizeTime); // Lower is more intense
-             if (am('echoTrails')) currentEchoTrails = Math.max(currentEchoTrails, apState.echoTrails);
-             if (am('slitScan')) currentSlitScan = Math.max(currentSlitScan, apState.slitScan);
-             if (am('timeDisplace')) currentTimeDisplace = Math.max(currentTimeDisplace, apState.timeDisplace);
-             if (am('softEdges')) currentSoft = currentSoft || apState.softEdges;
+             if (am('posterizeTime')) {
+                const posterizeDelta = 60 - apState.posterizeTime;
+                currentPosterizeTime = Math.min(currentPosterizeTime, Math.round(60 - posterizeDelta * apIntensityMultiplier));
+             }
+             if (am('echoTrails')) currentEchoTrails = Math.max(currentEchoTrails, Math.round(apState.echoTrails * apIntensityMultiplier));
+             if (am('slitScan')) currentSlitScan = Math.max(currentSlitScan, apState.slitScan * apIntensityMultiplier);
+             if (am('timeDisplace')) currentTimeDisplace = Math.max(currentTimeDisplace, apState.timeDisplace * apIntensityMultiplier);
+             if (am('softEdges')) currentSoft = currentSoft || (isSubdued ? false : apState.softEdges);
          }
       }
 
@@ -758,7 +953,7 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels }: VideoOutputPr
           </filter>
         </defs>
       </svg>
-      <video ref={videoRef} autoPlay playsInline muted={vjState.sourceType === 'camera'} loop className="hidden" />
+      <video ref={videoRef} autoPlay playsInline muted={vjState.sourceType === 'camera' || !vjState.clipAudio} loop className="hidden" crossOrigin="anonymous" />
       
       {/* Primary Rendering Target */}
       <canvas ref={canvasRef} className="w-full h-full block" />
