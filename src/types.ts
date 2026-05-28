@@ -1,7 +1,20 @@
 export interface VJState {
-  // Input Source
+  // Input Source — 'clip' covers video AND audio files (audio plays
+  // through the same <video> element which feeds the audio analyzer;
+  // the element just shows no frames when the file is audio-only).
+  // imageUrl is rendered as a still backdrop layered behind the
+  // visualizer canvas — preserved independently so the user can
+  // toggle between clip + image without losing either selection.
   sourceType: 'camera' | 'clip';
   clipUrl: string | null;
+  /** Name of the currently-loaded clip / audio file, for display. */
+  clipLabel?: string | null;
+  /** Set by the file router so the UI can label 'AUDIO LOADED' vs
+   *  'VIDEO LOADED' without sniffing the URL. */
+  clipKind?: 'video' | 'audio' | null;
+  /** Static image to render behind the visualizer canvas. */
+  imageUrl?: string | null;
+  imageLabel?: string | null;
 
   // Color & Optics
   hue: number;
@@ -66,6 +79,10 @@ export interface VJState {
 export const DEFAULT_VJ_STATE: VJState = {
   sourceType: 'camera',
   clipUrl: null,
+  clipLabel: null,
+  clipKind: null,
+  imageUrl: null,
+  imageLabel: null,
 
   hue: 0,
   saturation: 150,

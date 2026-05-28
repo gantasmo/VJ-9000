@@ -1,6 +1,7 @@
 import React from 'react';
 import { VJState } from '../types';
 import { Activity, RefreshCcw, Upload, Sliders, Cpu, Radio, Hash, Video } from 'lucide-react';
+import { routeFile, VJ_FILE_ACCEPT } from '../fileRouter';
 
 interface ControlsProps {
   state: VJState;
@@ -175,18 +176,19 @@ export function ControlDeck({ state, updateState, reset, hasCameraError }: Contr
             <div className="relative overflow-hidden">
               <button className="w-full h-10 flex items-center justify-center gap-2 text-[10px] uppercase font-mono tracking-widest border border-zinc-700 bg-zinc-800/50 text-zinc-300 hover:bg-purple-900/30 hover:border-purple-500 hover:text-purple-400 transition-colors rounded-sm cursor-pointer">
                 <Upload className="w-4 h-4" />
-                {state.clipUrl ? 'Load New Archive' : 'Select Data File'}
+                {state.clipUrl || state.imageUrl ? 'Load New Media' : 'Select Video / Audio / Image'}
               </button>
               <input
                 type="file"
-                accept="video/*"
+                accept={VJ_FILE_ACCEPT}
                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                 onChange={(e) => {
                   const file = e.target.files?.[0];
                   if (file) {
-                    const url = URL.createObjectURL(file);
-                    updateState({ clipUrl: url, sourceType: 'clip' });
+                    const route = routeFile(file);
+                    if (route.kind !== 'unsupported') updateState(route.patch);
                   }
+                  e.target.value = '';
                 }}
               />
             </div>
