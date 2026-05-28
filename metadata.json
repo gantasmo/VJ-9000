@@ -1,0 +1,11 @@
+{
+  "name": "Remix: GANTASMO-VEEJAY",
+  "description": "Live video manipulation and effect sequencer for storefront cameras.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
