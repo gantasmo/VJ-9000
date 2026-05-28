@@ -5,7 +5,7 @@ import { useAudioAnalyzer } from './useAudioAnalyzer';
 import { VideoOutput } from './components/VideoOutput';
 import { ControlDeck } from './components/VJControls';
 import { MidiPanel } from './components/MidiPanel';
-import { AlertTriangle, Film, Upload, X as XIcon, SkipForward, SkipBack, ListMusic } from 'lucide-react';
+import { AlertTriangle, Film, Upload, X as XIcon, SkipForward, SkipBack, ListMusic, Maximize2, Minimize2, ChevronDown, ChevronUp } from 'lucide-react';
 import { routeFiles, VJ_FILE_ACCEPT } from './fileRouter';
 import { useMidi } from './useMidi';
 
@@ -110,6 +110,35 @@ export default function App() {
 
   const resetState = () => setVjState(DEFAULT_VJ_STATE);
 
+  // Controls deck collapse/expand. When collapsed the aside shrinks
+  // to a thin handle the user can click to expand. When expanded the
+  // full ControlDeck is visible.
+  const [controlsOpen, setControlsOpen] = useState(true);
+
+  // Fullscreen toggle for the canvas. Uses the document's Fullscreen
+  // API; when invoked inside SA3's VJ iframe, the iframe element
+  // itself goes fullscreen which is exactly the live-performance
+  // workflow the user wants.
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  useEffect(() => {
+    const onFsChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+    document.addEventListener('fullscreenchange', onFsChange);
+    return () => document.removeEventListener('fullscreenchange', onFsChange);
+  }, []);
+  const toggleFullscreen = () => {
+    if (document.fullscreenElement) {
+      void document.exitFullscreen().catch(() => {
+        /* swallow — some browsers reject if user gesture timed out */
+      });
+    } else {
+      void document.documentElement.requestFullscreen().catch(() => {
+        /* swallow */
+      });
+    }
+  };
+
   return (
     <div
       className="w-full h-screen flex flex-col md:flex-row bg-black text-white overflow-hidden font-sans"
@@ -179,6 +208,20 @@ export default function App() {
             {routerError}
           </div>
         )}
+
+        {/* Tiny fullscreen toggle pinned to the bottom-right of the
+            canvas. Uses the Fullscreen API — when running inside
+            SA3's VJ iframe this fullscreens the iframe itself, which
+            is what the user wants for live performance. */}
+        <button
+          type="button"
+          onClick={toggleFullscreen}
+          className="absolute bottom-2 right-2 z-30 p-1.5 rounded border border-cyan-500/30 bg-black/60 backdrop-blur-sm text-cyan-300 hover:text-cyan-100 hover:bg-cyan-500/15 hover:border-cyan-400/60 transition-colors"
+          title={isFullscreen ? 'Exit fullscreen (Esc)' : 'Enter fullscreen'}
+          aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+        >
+          {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+        </button>
 
         {/* MIDI overlay — top-right pill that expands into the
             mapper. Sits above the rest of the canvas overlays. */}
@@ -307,17 +350,50 @@ export default function App() {
 
       {/* Controller Bus — full-width strip below the canvas on narrow
           viewports (< md), inline right-side panel on wider screens.
-          h-2/5 below md gives the canvas the top 60% of the screen so
-          the visualizer remains the focus; the controls scroll inside
-          their own region. */}
-      <aside className="w-full md:w-96 h-2/5 md:h-auto flex-shrink-0 relative z-50 shadow-[-10px_0_30px_rgba(0,0,0,0.8)] border-t md:border-t-0 md:border-l border-cyan-900/40 overflow-hidden">
-        <ControlDeck
-          state={vjState}
-          updateState={updateState}
-          reset={resetState}
-          hasCameraError={!!error && vjState.sourceType === 'camera'}
-        />
-      </aside>
+          Collapsible via the handle button; collapsed state is just
+          a thin re-open strip so the canvas reclaims that space.
+          h-2/5 below md gives the canvas the top 60% when expanded.
+
+          NOTE: when controlsOpen=false the canvas extends to use the
+          freed space — both axes (height on narrow, width on wide). */}
+      {controlsOpen ? (
+        <aside className="w-full md:w-96 h-2/5 md:h-auto flex-shrink-0 relative z-50 shadow-[-10px_0_30px_rgba(0,0,0,0.8)] border-t md:border-t-0 md:border-l border-cyan-900/40 overflow-hidden">
+          {/* Collapse handle — pinned at the corner closest to the
+              canvas (top edge on narrow viewports, left edge on
+              wide). Click to fold the deck. */}
+          <button
+            type="button"
+            onClick={() => setControlsOpen(false)}
+            className="absolute z-50 top-1 right-1 md:top-2 md:-left-3 md:right-auto p-1 rounded border border-cyan-500/40 bg-black/70 backdrop-blur-sm text-cyan-300 hover:text-cyan-100 hover:bg-cyan-500/15 hover:border-cyan-400/60 transition-colors"
+            title="Collapse controls"
+            aria-label="Collapse controls"
+          >
+            <ChevronDown className="md:hidden w-3 h-3" />
+            <XIcon className="hidden md:block w-3 h-3" />
+          </button>
+          <ControlDeck
+            state={vjState}
+            updateState={updateState}
+            reset={resetState}
+            hasCameraError={!!error && vjState.sourceType === 'camera'}
+          />
+        </aside>
+      ) : (
+        // Re-open handle when collapsed. Narrow: thin strip across the
+        // bottom of the screen. Wide: thin vertical strip pinned to
+        // the right edge. Either way clicking it brings the controls
+        // back without losing any state.
+        <button
+          type="button"
+          onClick={() => setControlsOpen(true)}
+          className="w-full md:w-6 h-6 md:h-auto shrink-0 z-50 flex items-center justify-center border-t md:border-t-0 md:border-l border-cyan-500/40 bg-black/80 text-cyan-300 hover:bg-cyan-500/10 hover:text-cyan-100 transition-colors"
+          title="Show controls"
+          aria-label="Show controls"
+        >
+          <ChevronUp className="md:hidden w-4 h-4" />
+          <ChevronDown className="hidden md:block w-4 h-4 rotate-90" />
+        </button>
+      )}
       
     </div>
   );
