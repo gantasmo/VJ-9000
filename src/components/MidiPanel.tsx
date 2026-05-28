@@ -61,7 +61,7 @@ export const MidiPanel: React.FC<MidiPanelProps> = ({
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className={`absolute top-2 right-32 z-30 flex items-center gap-1.5 px-2 py-1 rounded border text-[9px] font-mono uppercase tracking-widest ${status.cls}`}
+        className={`absolute top-2 right-32 z-50 flex items-center gap-1.5 px-2 py-1 rounded border text-[9px] font-mono uppercase tracking-widest ${status.cls}`}
         title={`MIDI · ${status.label}`}
       >
         <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${status.dot}`} />
@@ -72,7 +72,7 @@ export const MidiPanel: React.FC<MidiPanelProps> = ({
   }
 
   return (
-    <div className="absolute top-2 right-2 z-40 w-80 max-h-[80%] flex flex-col bg-black/90 backdrop-blur-md border border-cyan-500/40 rounded text-[10px] font-mono text-zinc-200 shadow-[0_8px_24px_rgba(0,0,0,0.6)]">
+    <div className="absolute top-2 right-2 z-50 w-80 max-h-[80%] flex flex-col bg-black/90 backdrop-blur-md border border-cyan-500/40 rounded text-[10px] font-mono text-zinc-200 shadow-[0_8px_24px_rgba(0,0,0,0.6)]">
       {/* Header */}
       <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-cyan-500/20 shrink-0">
         <div className="flex items-center gap-1.5">
