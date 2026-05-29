@@ -80,6 +80,11 @@ export interface VJState {
   audioReactive: boolean;
   autoPilot: boolean;
   recording: boolean;
+  /** Resolution the MediaRecorder canvas captures at — HD (1280x720),
+   *  FHD (1920x1080), or UHD (3840x2160). Height-locked; width is
+   *  derived from the live canvas's current aspect ratio so the
+   *  recorded file matches what the user sees. */
+  recordQuality?: '720p' | '1080p' | '4K';
   aspectRatio: string;
   
   // Timecode
@@ -157,6 +162,7 @@ export const DEFAULT_VJ_STATE: VJState = {
   audioReactive: false,
   autoPilot: false,
   recording: false,
+  recordQuality: '1080p',
   aspectRatio: 'free',
   
   playbackSpeed: 1.0,

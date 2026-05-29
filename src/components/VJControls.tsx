@@ -181,7 +181,7 @@ export function ControlDeck({ state, updateState, reset, hasCameraError }: Contr
       </div>
 
       {/* RECORD BAR */}
-      <div className="bg-zinc-950 border-b border-zinc-800 px-3 py-1.5 flex justify-center">
+      <div className="bg-zinc-950 border-b border-zinc-800 px-3 py-1.5 flex items-center justify-center gap-2">
         <button
           onClick={() => updateState({ recording: !state.recording })}
           className={`flex items-center gap-1.5 px-3 py-1 text-[9px] uppercase font-mono tracking-widest border rounded transition-all ${
@@ -193,6 +193,19 @@ export function ControlDeck({ state, updateState, reset, hasCameraError }: Contr
           <div className={`w-2 h-2 rounded-full ${state.recording ? 'bg-red-500' : 'bg-red-900/50'}`}></div>
           {state.recording ? 'RECORDING... (CLICK TO STOP & SAVE)' : 'REC EXPORT TO FILE'}
         </button>
+        {/* Quality dropdown — disabled mid-take so a switch can't tear
+            the captureStream output. */}
+        <select
+          value={state.recordQuality ?? '1080p'}
+          onChange={(e) => updateState({ recordQuality: e.target.value as '720p' | '1080p' | '4K' })}
+          disabled={state.recording}
+          className="bg-black border border-zinc-700 text-[9px] font-mono uppercase tracking-widest text-zinc-300 px-1.5 py-1 rounded cursor-pointer hover:border-red-500/50 disabled:opacity-50 disabled:cursor-not-allowed"
+          title="Recording resolution — HD 720p, FHD 1080p, UHD 4K. Locks during a take."
+        >
+          <option value="720p">HD</option>
+          <option value="1080p">FHD</option>
+          <option value="4K">UHD</option>
+        </select>
       </div>
       
       {/* INPUT DECK — moved up above the autopilot override per UX

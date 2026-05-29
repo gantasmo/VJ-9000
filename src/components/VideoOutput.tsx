@@ -37,6 +37,19 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwit
     
     const startRecording = async () => {
       if (!recordCanvasRef.current) return;
+      // Lock the record canvas to the user-selected quality height
+      // and derive width from the live display canvas's aspect so
+      // the file matches what they see. The render loop's recordCanvas
+      // branch (further down) detects a recording in progress and
+      // uses scaled drawImage instead of auto-resizing.
+      const qualityHeights: Record<string, number> = { '720p': 720, '1080p': 1080, '4K': 2160 };
+      const targetH = qualityHeights[vjState.recordQuality ?? '1080p'] ?? 1080;
+      const liveCanvas = canvasRef.current;
+      const aspect = liveCanvas && liveCanvas.height > 0
+        ? liveCanvas.width / liveCanvas.height
+        : 16 / 9;
+      recordCanvasRef.current.width = Math.round(targetH * aspect);
+      recordCanvasRef.current.height = targetH;
       const stream = recordCanvasRef.current.captureStream(30);
       
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
@@ -876,17 +889,20 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwit
          canvas.style.filter = styleStr;
       }
       
-      // Update record canvas for captureStream with burned-in filters
+      // Update record canvas for captureStream with burned-in filters.
+      // When a take is in progress the dims are locked to the chosen
+      // recordQuality (set in startRecording); otherwise we mirror
+      // the live canvas. The drawImage scales source → record dims.
       if (recordCanvasRef.current) {
           const rCanvas = recordCanvasRef.current;
-          if (rCanvas.width !== w || rCanvas.height !== h) {
+          if (!s.recording && (rCanvas.width !== w || rCanvas.height !== h)) {
               rCanvas.width = w;
               rCanvas.height = h;
           }
           const rCtx = rCanvas.getContext('2d', { alpha: false });
           if (rCtx) {
               rCtx.filter = styleStr;
-              rCtx.drawImage(canvas, 0, 0);
+              rCtx.drawImage(canvas, 0, 0, rCanvas.width, rCanvas.height);
               rCtx.filter = 'none'; // reset for direct overlay drawing
               
               if (s.scanlines) {
