@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { VJState } from '../types';
 import { AudioLevels } from '../useAudioAnalyzer';
+import { computeAudioModulation } from '../audioRouting';
 
 interface VideoOutputProps {
   vjState: VJState;
@@ -175,6 +176,48 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwit
     // For Slit scan / Time displacement / Echo trails
     const slitCanvas = document.createElement('canvas');
     const slitCtx = slitCanvas.getContext('2d', { alpha: true });
+
+    // ── Category A scratch buffers (Reaction-Diffusion, SDF Portal,
+    // Topographic, Fluid Displacement). Each effect computes on a small
+    // downsampled grid then composites up to the full canvas so the
+    // 2D-canvas pipeline stays at 60fps even on weak GPUs. The buffers
+    // persist across frames (the RD chemical field and the fluid
+    // velocity field are inherently temporal). ──────────────────────
+    // Reaction-Diffusion: ping-pong Gray-Scott chemical concentration
+    // grids (Float32 A/B per cell) + an ImageData we paint the pattern
+    // into for compositing.
+    const RD_W = 160;
+    const RD_H = 90;
+    let rdA = new Float32Array(RD_W * RD_H).fill(1);
+    let rdB = new Float32Array(RD_W * RD_H).fill(0);
+    let rdA2 = new Float32Array(RD_W * RD_H);
+    let rdB2 = new Float32Array(RD_W * RD_H);
+    let rdSeeded = false;
+    const rdCanvas = document.createElement('canvas');
+    rdCanvas.width = RD_W;
+    rdCanvas.height = RD_H;
+    const rdCtx = rdCanvas.getContext('2d', { alpha: true });
+    const rdImage = rdCtx ? rdCtx.createImageData(RD_W, RD_H) : null;
+
+    // SDF Portal: drawn procedurally with canvas vector ops onto a
+    // half-res buffer, then screen-composited.
+    const sdfCanvas = document.createElement('canvas');
+    const sdfCtx = sdfCanvas.getContext('2d', { alpha: true });
+
+    // Fluid Displacement: coarse velocity field derived from luma
+    // differences between the current and previous downsampled frame.
+    const FLOW_W = 64;
+    const FLOW_H = 36;
+    let flowPrev = new Float32Array(FLOW_W * FLOW_H);
+    const flowVx = new Float32Array(FLOW_W * FLOW_H);
+    const flowVy = new Float32Array(FLOW_W * FLOW_H);
+    const flowSampleCanvas = document.createElement('canvas');
+    flowSampleCanvas.width = FLOW_W;
+    flowSampleCanvas.height = FLOW_H;
+    const flowSampleCtx = flowSampleCanvas.getContext('2d', { alpha: false, willReadFrequently: true });
+    const fxScratch = document.createElement('canvas');
+    const fxScratchCtx = fxScratch.getContext('2d', { alpha: false });
+
     
     // Frame buffer for backskip and time displacement
     const bufferSize = 60;
@@ -218,10 +261,18 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwit
 
       const s = stateRef.current;
       
+      // Performance tier scales the internal backing-store resolution
+      // while the CSS box (w-full h-full) stays the same size, so the
+      // browser upscales a cheaper render on weaker GPUs.
+      const perfScale = s.performanceMode === 'low' ? 0.5 : s.performanceMode === 'medium' ? 0.75 : 1.0;
       const container = canvas.parentElement;
-      if (container && (canvas.width !== container.clientWidth || canvas.height !== container.clientHeight)) {
-        canvas.width = container.clientWidth;
-        canvas.height = container.clientHeight;
+      if (container) {
+        const targetW = Math.max(2, Math.round(container.clientWidth * perfScale));
+        const targetH = Math.max(2, Math.round(container.clientHeight * perfScale));
+        if (canvas.width !== targetW || canvas.height !== targetH) {
+          canvas.width = targetW;
+          canvas.height = targetH;
+        }
       }
 
       const w = canvas.width;
@@ -268,6 +319,35 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwit
       const powBass = Math.pow(audio.bass, 3); 
       
       bassSmooth = bassSmooth * 0.9 + powBass * 0.1;
+
+      // --- PER-EFFECT AUDIO ROUTING ---
+      // Every mappable parameter can be individually routed to an audio
+      // band via the Audio Reactivity panel (see audioRouting.ts). When
+      // the master `audioReactive` flag is on, fold each routed value
+      // over its base before the rest of the pipeline reads it. Only
+      // routed keys appear in `audioMod`, so unrouted params keep their
+      // base value untouched.
+      const audioMod = computeAudioModulation(s, audio);
+      if (audioMod.glitch !== undefined) currentGlitch = audioMod.glitch;
+      if (audioMod.rgbGhost !== undefined) currentGhost = audioMod.rgbGhost;
+      if (audioMod.strobe !== undefined) currentStrobe = audioMod.strobe;
+      if (audioMod.pixelate !== undefined) currentPixelate = audioMod.pixelate;
+      if (audioMod.waveWarp !== undefined) currentWave = audioMod.waveWarp;
+      if (audioMod.rgbSplit !== undefined) currentSplit = audioMod.rgbSplit;
+      if (audioMod.chromaAb !== undefined) currentChromaAb = audioMod.chromaAb;
+      if (audioMod.backskip !== undefined) currentBackskip = audioMod.backskip;
+      if (audioMod.feedback !== undefined) currentFeedback = audioMod.feedback;
+      if (audioMod.tiling !== undefined) currentTiling = audioMod.tiling;
+      if (audioMod.hue !== undefined) currentHue = audioMod.hue;
+      if (audioMod.saturation !== undefined) currentSat = audioMod.saturation;
+      if (audioMod.contrast !== undefined) currentContrast = audioMod.contrast;
+      if (audioMod.brightness !== undefined) currentBright = audioMod.brightness;
+      if (audioMod.playbackSpeed !== undefined) currentPlaybackSpeed = audioMod.playbackSpeed;
+      if (audioMod.posterizeTime !== undefined) currentPosterizeTime = audioMod.posterizeTime;
+      if (audioMod.echoTrails !== undefined) currentEchoTrails = audioMod.echoTrails;
+      if (audioMod.slitScan !== undefined) currentSlitScan = audioMod.slitScan;
+      if (audioMod.timeDisplace !== undefined) currentTimeDisplace = audioMod.timeDisplace;
+
       
       if (s.autoPilot) {
          const { speed, chaos, geo, corrupt, color, timecode } = s.apConfig;
@@ -779,8 +859,271 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwit
 
       ctx.restore();
 
+      // --- RADIAL MIRROR / KALEIDOSCOPE WHEEL ---
+      // Slices the composed frame into N angular sectors and mirrors a
+      // single source wedge around the center, producing a radial
+      // kaleidoscope. We snapshot the current canvas into compostCanvas
+      // (the same scratch buffer the stereo pass re-snapshots later) and
+      // redraw rotated, clipped wedges from it. When audioReactive is on,
+      // mid/high energy rotates the wheel and bass nudges the sector
+      // count's phase so the pattern pulses with the track.
+      {
+        const spokes = Math.round(s.radialSpokes ?? 0);
+        if (spokes >= 2) {
+          if (compostCanvas.width !== w || compostCanvas.height !== h) {
+            compostCanvas.width = w;
+            compostCanvas.height = h;
+          }
+          if (compostCtx) {
+            compostCtx.clearRect(0, 0, w, h);
+            compostCtx.drawImage(canvas, 0, 0);
+
+            const sectorAngle = (Math.PI * 2) / spokes;
+            // Audio-reactive rotation: mid+high spin the wheel, bass adds
+            // a slow base drift. Falls back to a gentle time drift when
+            // audio reactivity is off so the effect still breathes.
+            let baseRotation = (timestamp / 1000) * 0.15;
+            if (s.audioReactive) {
+              baseRotation += (audio.mid + audio.high) * Math.PI;
+            }
+
+            ctx.fillStyle = 'black';
+            ctx.fillRect(0, 0, w, h);
+
+            const radius = Math.sqrt(w * w + h * h);
+            for (let i = 0; i < spokes; i++) {
+              ctx.save();
+              ctx.translate(w / 2, h / 2);
+              ctx.rotate(baseRotation + i * sectorAngle);
+              // Mirror every other sector so reflections meet seamlessly.
+              if (i % 2 === 1) ctx.scale(1, -1);
+
+              // Clip to a single wedge of the source space.
+              ctx.beginPath();
+              ctx.moveTo(0, 0);
+              ctx.arc(0, 0, radius, -sectorAngle / 2, sectorAngle / 2);
+              ctx.closePath();
+              ctx.clip();
+
+              ctx.translate(-w / 2, -h / 2);
+              ctx.drawImage(compostCanvas, 0, 0);
+              ctx.restore();
+            }
+          }
+        }
+      }
+
+      // --- CATEGORY A: REACTION-DIFFUSION SKIN (Gray-Scott) ---------
+      // Runs a few Gray-Scott solver steps on a small grid each frame,
+      // seeding chemical B from frame luminance so the Turing pattern
+      // grows out of bright regions, then screen-composites the pattern
+      // (tinted by hue) over the frame. Cheap: RD_W*RD_H cells * a few
+      // iterations. Bass nudges the feed rate when audioReactive is on.
+      if ((s.reactionDiffusion ?? 0) > 0 && rdCtx && rdImage) {
+        const amt = s.reactionDiffusion;
+        // Seed once: a noisy patch of B in the center so the reaction
+        // has something to chew on at startup.
+        if (!rdSeeded) {
+          for (let i = 0; i < RD_W * RD_H; i++) {
+            rdA[i] = 1;
+            rdB[i] = Math.random() < 0.08 ? 1 : 0;
+          }
+          rdSeeded = true;
+        }
+        // Re-inject B from the current frame's bright areas so the
+        // pattern tracks the video content.
+        if (flowSampleCtx) {
+          flowSampleCtx.drawImage(canvas, 0, 0, FLOW_W, FLOW_H);
+        }
+        const dA = 1.0;
+        const dB = 0.5;
+        const feed = 0.0545 + (s.audioReactive ? powBass * 0.01 : 0);
+        const kill = 0.062;
+        const steps = 6;
+        for (let step = 0; step < steps; step++) {
+          for (let y = 1; y < RD_H - 1; y++) {
+            for (let x = 1; x < RD_W - 1; x++) {
+              const idx = y * RD_W + x;
+              const a = rdA[idx];
+              const b = rdB[idx];
+              // 3x3 Laplacian (center weight -1, edges 0.2, corners 0.05)
+              const lapA =
+                rdA[idx - 1] * 0.2 + rdA[idx + 1] * 0.2 +
+                rdA[idx - RD_W] * 0.2 + rdA[idx + RD_W] * 0.2 +
+                (rdA[idx - RD_W - 1] + rdA[idx - RD_W + 1] + rdA[idx + RD_W - 1] + rdA[idx + RD_W + 1]) * 0.05 -
+                a;
+              const lapB =
+                rdB[idx - 1] * 0.2 + rdB[idx + 1] * 0.2 +
+                rdB[idx - RD_W] * 0.2 + rdB[idx + RD_W] * 0.2 +
+                (rdB[idx - RD_W - 1] + rdB[idx - RD_W + 1] + rdB[idx + RD_W - 1] + rdB[idx + RD_W + 1]) * 0.05 -
+                b;
+              const abb = a * b * b;
+              rdA2[idx] = a + (dA * lapA - abb + feed * (1 - a));
+              rdB2[idx] = b + (dB * lapB + abb - (kill + feed) * b);
+            }
+          }
+          // ping-pong
+          const ta = rdA; rdA = rdA2; rdA2 = ta;
+          const tb = rdB; rdB = rdB2; rdB2 = tb;
+        }
+        // Paint B concentration into the RD image (hue-tinted white-ish).
+        const data = rdImage.data;
+        for (let i = 0; i < RD_W * RD_H; i++) {
+          const v = Math.max(0, Math.min(1, (rdA[i] - rdB[i]) * 1.0));
+          const c = Math.round(v * 255);
+          data[i * 4] = c;
+          data[i * 4 + 1] = Math.round(c * 0.85);
+          data[i * 4 + 2] = 255 - c;
+          data[i * 4 + 3] = Math.round(amt * 255);
+        }
+        rdCtx.putImageData(rdImage, 0, 0);
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = 1.0;
+        ctx.imageSmoothingEnabled = true;
+        ctx.drawImage(rdCanvas, 0, 0, w, h);
+        ctx.restore();
+      }
+
+      // --- CATEGORY A: TOPOGRAPHIC ISOLINES -------------------------
+      // Quantizes the composed frame's luminance into N bands and draws
+      // the band boundaries (where neighbouring pixels fall in different
+      // bands) as bright contour strokes, mixed over the frame by amount.
+      if ((s.topographic ?? 0) > 0 && fxScratchCtx) {
+        const amt = s.topographic;
+        const TW = Math.max(8, Math.floor(w * 0.5));
+        const TH = Math.max(8, Math.floor(h * 0.5));
+        if (fxScratch.width !== TW || fxScratch.height !== TH) {
+          fxScratch.width = TW;
+          fxScratch.height = TH;
+        }
+        fxScratchCtx.drawImage(canvas, 0, 0, TW, TH);
+        const src = fxScratchCtx.getImageData(0, 0, TW, TH);
+        const sd = src.data;
+        const out = fxScratchCtx.createImageData(TW, TH);
+        const od = out.data;
+        const bands = 7;
+        const lumaBand = (i: number) => {
+          const l = (sd[i] * 0.299 + sd[i + 1] * 0.587 + sd[i + 2] * 0.114) / 255;
+          return Math.floor(l * bands);
+        };
+        for (let y = 0; y < TH; y++) {
+          for (let x = 0; x < TW; x++) {
+            const i = (y * TW + x) * 4;
+            const b0 = lumaBand(i);
+            const bR = x < TW - 1 ? lumaBand(i + 4) : b0;
+            const bD = y < TH - 1 ? lumaBand(i + TW * 4) : b0;
+            const edge = b0 !== bR || b0 !== bD;
+            if (edge) {
+              od[i] = 220; od[i + 1] = 255; od[i + 2] = 230; od[i + 3] = 255;
+            } else {
+              od[i + 3] = 0;
+            }
+          }
+        }
+        fxScratchCtx.putImageData(out, 0, 0);
+        ctx.save();
+        ctx.globalAlpha = amt;
+        ctx.imageSmoothingEnabled = true;
+        ctx.drawImage(fxScratch, 0, 0, w, h);
+        ctx.restore();
+      }
+
+      // --- CATEGORY A: FLUID DISPLACEMENT ---------------------------
+      // Derives a coarse velocity field from the luma difference between
+      // the current and previous downsampled frame (a cheap motion proxy)
+      // and smears the frame along that field by drawing offset, low-alpha
+      // copies per cell. Volume amplifies the push when audioReactive.
+      if ((s.fluidDisplace ?? 0) > 0 && flowSampleCtx) {
+        const amt = s.fluidDisplace * (s.audioReactive ? 1 + audio.volume * 2 : 1);
+        flowSampleCtx.drawImage(canvas, 0, 0, FLOW_W, FLOW_H);
+        const fd = flowSampleCtx.getImageData(0, 0, FLOW_W, FLOW_H).data;
+        // Update velocity field from temporal + spatial luma gradients.
+        for (let y = 1; y < FLOW_H - 1; y++) {
+          for (let x = 1; x < FLOW_W - 1; x++) {
+            const idx = y * FLOW_W + x;
+            const p = idx * 4;
+            const luma = fd[p] * 0.299 + fd[p + 1] * 0.587 + fd[p + 2] * 0.114;
+            const dt = luma - flowPrev[idx];
+            const gx = (fd[p + 4] - fd[p - 4]);
+            const gy = (fd[p + FLOW_W * 4] - fd[p - FLOW_W * 4]);
+            // velocity ~ -temporal_diff * spatial_gradient (optical-flow-ish)
+            flowVx[idx] = flowVx[idx] * 0.85 + (-dt * gx) * 0.0006;
+            flowVy[idx] = flowVy[idx] * 0.85 + (-dt * gy) * 0.0006;
+            flowPrev[idx] = luma;
+          }
+        }
+        // Smear: draw a handful of displaced full-frame copies whose
+        // offset samples the average field magnitude. Keeps it O(few)
+        // drawImage calls rather than per-cell warping.
+        let avgX = 0, avgY = 0;
+        for (let i = 0; i < FLOW_W * FLOW_H; i++) { avgX += flowVx[i]; avgY += flowVy[i]; }
+        avgX /= FLOW_W * FLOW_H; avgY /= FLOW_W * FLOW_H;
+        if (compostCanvas.width !== w || compostCanvas.height !== h) {
+          compostCanvas.width = w; compostCanvas.height = h;
+        }
+        if (compostCtx) {
+          compostCtx.clearRect(0, 0, w, h);
+          compostCtx.drawImage(canvas, 0, 0);
+          const layers = 4;
+          ctx.save();
+          ctx.globalCompositeOperation = 'lighter';
+          for (let l = 1; l <= layers; l++) {
+            const k = (l / layers) * amt * 120;
+            ctx.globalAlpha = 0.18 * amt;
+            ctx.drawImage(compostCanvas, avgX * k, avgY * k, w, h);
+          }
+          ctx.restore();
+        }
+      }
+
+      // --- CATEGORY A: SDF RAYMARCH PORTAL --------------------------
+      // Procedurally draws a glowing signed-distance-field ring/tunnel
+      // on a half-res buffer (concentric SDF rings shaded by distance)
+      // and screen-composites it as an overlay portal. Mid energy pulses
+      // the radius; falls back to a gentle time pulse when audio is off.
+      if ((s.sdfPortal ?? 0) > 0 && sdfCtx) {
+        const amt = s.sdfPortal;
+        const SW = Math.max(8, Math.floor(w * 0.5));
+        const SH = Math.max(8, Math.floor(h * 0.5));
+        if (sdfCanvas.width !== SW || sdfCanvas.height !== SH) {
+          sdfCanvas.width = SW;
+          sdfCanvas.height = SH;
+        }
+        sdfCtx.clearRect(0, 0, SW, SH);
+        const cx = SW / 2;
+        const cy = SH / 2;
+        const pulse = s.audioReactive ? audio.mid : (0.5 + 0.5 * Math.sin(timestamp / 600));
+        const baseR = Math.min(SW, SH) * (0.18 + pulse * 0.12);
+        const rings = 6;
+        for (let i = rings; i >= 1; i--) {
+          const r = baseR * (1 + i * 0.5) + (timestamp / 1000 * 30 % (baseR * 0.5));
+          const glow = (1 - i / rings);
+          sdfCtx.beginPath();
+          sdfCtx.arc(cx, cy, r, 0, Math.PI * 2);
+          sdfCtx.lineWidth = 2 + glow * 6;
+          sdfCtx.strokeStyle = `rgba(${Math.round(120 + glow * 135)}, ${Math.round(200 * glow + 40)}, 255, ${0.5 * glow})`;
+          sdfCtx.stroke();
+        }
+        // Bright core
+        const coreGrad = sdfCtx.createRadialGradient(cx, cy, 0, cx, cy, baseR);
+        coreGrad.addColorStop(0, 'rgba(200,240,255,0.9)');
+        coreGrad.addColorStop(1, 'rgba(40,80,255,0)');
+        sdfCtx.fillStyle = coreGrad;
+        sdfCtx.beginPath();
+        sdfCtx.arc(cx, cy, baseR, 0, Math.PI * 2);
+        sdfCtx.fill();
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = amt;
+        ctx.imageSmoothingEnabled = true;
+        ctx.drawImage(sdfCanvas, 0, 0, w, h);
+        ctx.restore();
+      }
+
       // --- PIXEL TEARING (DATAMOSH) ---
       if (currentGlitch > 0) {
+
         ctx.globalAlpha = 1.0;
         if (Math.random() < currentGlitch) {
           const slices = Math.floor(Math.random() * 12 * currentGlitch) + 1;

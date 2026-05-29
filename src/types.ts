@@ -57,6 +57,40 @@ export interface VJState {
   equirect: boolean;
   stereoMode: 'none' | 'sbs' | 'tb';
   softEdges: boolean;
+  /** Radial Mirror / Kaleidoscope. Number of angular sectors the
+   *  frame is sliced into and mirrored around the center. 0 disables
+   *  the effect; 2..24 produces increasingly fine reflection lines.
+   *  Audio reactivity perturbs the rotation offset when audioReactive
+   *  is on. Implemented in VideoOutput.tsx as a pre-composite pass. */
+  radialSpokes: number;
+
+  // ── Category A — additional GPU/geometry effects (no ML) ──────────
+  /** Reaction-Diffusion Skin (Gray-Scott). 0 disables; 0..1 blends a
+   *  Turing-pattern chemical-growth overlay (computed on a downsampled
+   *  grid, seeded by frame luminance) over the composed frame. Bass
+   *  energy perturbs the feed rate when audioReactive is on. */
+  reactionDiffusion: number;
+  /** SDF Raymarch Portal. 0 disables; 0..1 screen-composites a
+   *  procedural signed-distance-field ring/tunnel raymarched on a
+   *  downsampled buffer. Mid energy pulses the portal radius. */
+  sdfPortal: number;
+  /** Topographic Isolines. 0 disables; 0..1 quantizes frame luminance
+   *  into discrete contour bands and draws the band boundaries as
+   *  isoline strokes, mixed over the original by the amount. */
+  topographic: number;
+  /** Fluid Displacement. 0 disables; 0..1 drives a coarse velocity
+   *  field from inter-frame pixel differences and smears the frame
+   *  along it. Volume energy amplifies the displacement. */
+  fluidDisplace: number;
+
+
+  // Performance
+  /** Render-scale tier. 'high' renders the canvas at full container
+   *  resolution; 'medium' multiplies internal width/height by 0.75;
+   *  'low' by 0.5. The CSS box stays the same size, so lower tiers
+   *  trade sharpness for frame rate on weaker GPUs. */
+  performanceMode: 'high' | 'medium' | 'low';
+
   
   // Distortion & FX
   feedback: number;
@@ -153,7 +187,15 @@ export const DEFAULT_VJ_STATE: VJState = {
   equirect: false,
   stereoMode: 'none',
   softEdges: true,
-  
+  radialSpokes: 0,
+
+  reactionDiffusion: 0,
+  sdfPortal: 0,
+  topographic: 0,
+  fluidDisplace: 0,
+
+  performanceMode: 'high',
+
   feedback: 0.85,
   glitch: 0,
   rgbGhost: 0,

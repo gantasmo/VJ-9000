@@ -19,7 +19,7 @@ export default defineConfig(() => {
       // Don't reject requests whose Host header is a LAN IP or hostname.
       // Vite blocks unknown hosts by default for DNS-rebind protection;
       // `true` disables that check so mobile devices aren't blocked.
-      allowedHosts: true,
+      allowedHosts: true as const,
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modifyâfile watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
