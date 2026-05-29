@@ -17,6 +17,11 @@ export interface VJState {
   layoutMode: 'standard' | 'split' | 'preview' | 'fullscreen';
   // Input Source
   sourceType: 'camera' | 'clip';
+  /** 0 = full CAM, 1 = full MEM clip. The CAM/MEM crossfader writes
+   *  this; sourceType is kept in sync so the existing single-source
+   *  renderer still works at the extremes. True dual-source
+   *  compositing across mid-values is a VideoOutput follow-up. */
+  sourceBlend?: number;
   clipUrl: string | null;
   /** Display label for the currently-loaded clip (file name). */
   clipLabel?: string | null;
@@ -105,6 +110,7 @@ export interface VJState {
 export const DEFAULT_VJ_STATE: VJState = {
   layoutMode: 'standard',
   sourceType: 'camera',
+  sourceBlend: 0,
   clipUrl: null,
   clipLabel: null,
   clipKind: null,

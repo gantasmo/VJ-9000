@@ -195,6 +195,197 @@ export function ControlDeck({ state, updateState, reset, hasCameraError }: Contr
         </button>
       </div>
       
+      {/* INPUT DECK — moved up above the autopilot override per UX
+          spec. Houses the CAM/MEM crossfader, Canvas Format, MUTE +
+          IMPORT controls, and the Archive Bin. */}
+      <section className="mx-3 mt-3 mb-0 p-3 border border-zinc-800 bg-black/30 rounded space-y-3">
+        <h2 className="text-[10px] text-zinc-400 uppercase tracking-widest font-mono border-b border-zinc-800 pb-1 mb-1 flex items-center gap-2">
+          <Radio className="w-3 h-3 text-fuchsia-500" /> SOURCE // MATRIX
+        </h2>
+
+        {/* CAM/MEM toggles + crossfader. sourceBlend is the canonical
+            control; sourceType is derived from it (<0.5 = CAM, >=0.5 =
+            MEM) so the current renderer keeps working at the extremes. */}
+        <div>
+          <div className="grid grid-cols-2 gap-2 mb-1.5">
+            <TogglePad
+              label="CAM (Live)"
+              active={state.sourceType === 'camera'}
+              onClick={() => updateState({ sourceType: 'camera', sourceBlend: 0 })}
+              highlight="purple"
+            />
+            <TogglePad
+              label="MEM (Clip)"
+              active={state.sourceType === 'clip'}
+              onClick={() => updateState({ sourceType: 'clip', sourceBlend: 1 })}
+              highlight="purple"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[8px] font-mono uppercase tracking-widest text-purple-300/60 shrink-0">CAM</span>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.01}
+              value={state.sourceBlend ?? (state.sourceType === 'clip' ? 1 : 0)}
+              onChange={(e) => {
+                const v = parseFloat(e.target.value);
+                updateState({
+                  sourceBlend: v,
+                  sourceType: v < 0.5 ? 'camera' : 'clip',
+                });
+              }}
+              className="flex-1 h-1.5 accent-purple-500 bg-zinc-900 rounded-sm cursor-col-resize"
+              title="Crossfade CAM ↔ MEM"
+            />
+            <span className="text-[8px] font-mono uppercase tracking-widest text-purple-300/60 shrink-0">MEM</span>
+          </div>
+        </div>
+
+        {/* Canvas Format */}
+        <div className="flex flex-col gap-1.5">
+          <span className="text-[10px] text-zinc-500 uppercase tracking-widest font-mono">Canvas Format</span>
+          <div className="grid grid-cols-6 gap-1">
+            <TogglePad label="FREE" active={state.aspectRatio === 'free'} onClick={() => updateState({ aspectRatio: 'free' })} highlight="purple" />
+            <TogglePad label="16:9" active={state.aspectRatio === '16:9'} onClick={() => updateState({ aspectRatio: '16:9' })} highlight="purple" />
+            <TogglePad label="4:3" active={state.aspectRatio === '4:3'} onClick={() => updateState({ aspectRatio: '4:3' })} highlight="purple" />
+            <TogglePad label="9:16" active={state.aspectRatio === '9:16'} onClick={() => updateState({ aspectRatio: '9:16' })} highlight="purple" />
+            <TogglePad label="1:1" active={state.aspectRatio === '1:1'} onClick={() => updateState({ aspectRatio: '1:1' })} highlight="purple" />
+            <TogglePad label="21:9" active={state.aspectRatio === '21:9'} onClick={() => updateState({ aspectRatio: '21:9' })} highlight="purple" />
+          </div>
+        </div>
+
+        {/* MUTE (square) + SELECT & IMPORT VIDEO CLIPS row. MUTE is the
+            user-requested rename of the old "CLIP AUDIO ON/OFF" wide bar. */}
+        <div className="flex gap-2 items-stretch">
+          <button
+            onClick={() => updateState({ clipAudio: !state.clipAudio })}
+            className={`w-12 h-12 shrink-0 flex flex-col items-center justify-center text-[9px] uppercase font-mono font-bold tracking-widest border rounded transition-all ${
+              state.clipAudio
+                ? 'bg-purple-900/40 border-purple-500/60 text-purple-200 shadow-[0_0_10px_rgba(168,85,247,0.2)]'
+                : 'bg-black border-zinc-700 text-zinc-500 hover:border-zinc-500 hover:text-zinc-300'
+            }`}
+            title={state.clipAudio ? 'Clip audio is ON — click to MUTE' : 'Clip audio is MUTED — click to unmute'}
+            aria-label="Mute clip audio"
+          >
+            {state.clipAudio ? 'AUDIO' : 'MUTE'}
+            <span className="text-[7px] mt-0.5 opacity-70">{state.clipAudio ? 'ON' : 'OFF'}</span>
+          </button>
+          <div className="relative overflow-hidden flex-1">
+            <button className="w-full h-12 flex items-center justify-center gap-2 text-[10px] uppercase font-mono tracking-widest border border-dashed border-zinc-700 bg-zinc-800/10 text-zinc-400 hover:bg-purple-950/20 hover:border-purple-500 hover:text-purple-300 transition-all rounded-sm cursor-pointer">
+              <Upload className="w-4 h-4" />
+              SELECT &amp; IMPORT VIDEO CLIPS
+            </button>
+            <input
+              type="file"
+              accept="video/*,audio/*,image/*"
+              multiple
+              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer text-[0px]"
+              onChange={(e) => {
+                const files = e.target.files;
+                if (files && files.length > 0) {
+                  const newClips = Array.from(files).map((file: any) => {
+                    const url = URL.createObjectURL(file as File);
+                    const id = `clip-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+                    const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
+                    return {
+                      id,
+                      name: file.name.length > 25 ? file.name.substring(0, 21) + "..." : file.name,
+                      url,
+                      size: `${sizeMB} MB`,
+                    };
+                  });
+                  const mergedBucket = [...(state.videoBucket || []), ...newClips];
+                  updateState({
+                    videoBucket: mergedBucket,
+                    activeClipId: newClips[newClips.length - 1].id,
+                    clipUrl: newClips[newClips.length - 1].url,
+                    sourceType: 'clip',
+                    sourceBlend: 1,
+                  });
+                  e.target.value = '';
+                }
+              }}
+            />
+          </div>
+        </div>
+
+        {/* Archive Bin — only shown when MEM clips exist. Moved up
+            with the rest of the input controls. */}
+        {state.videoBucket && state.videoBucket.length > 0 && (
+          <div className="border border-zinc-800/70 bg-black/60 p-2 rounded-sm shadow-inner">
+            <div className="flex justify-between items-center mb-1.5 pb-1 border-b border-zinc-900">
+              <span className="text-[9px] text-zinc-500 uppercase tracking-widest font-mono">
+                ARCHIVE BIN / CLIPS ({state.videoBucket.length})
+              </span>
+              <button
+                onClick={() => updateState({ videoBucket: [], activeClipId: null, clipUrl: null })}
+                className="text-[8px] text-zinc-600 hover:text-red-400 uppercase font-mono tracking-wider transition-colors"
+              >
+                Purge Bin
+              </button>
+            </div>
+            <div className="space-y-1 max-h-40 overflow-y-auto custom-scrollbar">
+              {state.videoBucket.map((clip) => {
+                const isActive = state.activeClipId === clip.id;
+                return (
+                  <div
+                    key={clip.id}
+                    className={`flex items-center justify-between p-1.5 rounded transition-all ${
+                      isActive
+                        ? 'bg-purple-950/20 border border-purple-500/50 text-purple-300 shadow-[0_0_10px_rgba(168,85,247,0.1)]'
+                        : 'bg-zinc-950/80 border border-zinc-900 text-zinc-500 hover:border-zinc-800 hover:text-zinc-300'
+                    }`}
+                  >
+                    <button
+                      onClick={() => {
+                        updateState({ activeClipId: clip.id, clipUrl: clip.url, sourceType: 'clip', sourceBlend: 1 });
+                      }}
+                      className="flex-1 flex flex-col min-w-0 pr-2 align-middle text-left cursor-pointer"
+                    >
+                      <span className="text-[10px] font-mono truncate font-medium tracking-wide">
+                        {clip.name}
+                      </span>
+                      {clip.size && (
+                        <span className="text-[8px] font-mono text-zinc-600">
+                          SIZE: {clip.size}
+                        </span>
+                      )}
+                    </button>
+                    {state.videoBucket.length > 1 && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const filtered = state.videoBucket.filter(c => c.id !== clip.id);
+                          let nextActive = state.activeClipId;
+                          let nextUrl = state.clipUrl;
+                          if (clip.id === state.activeClipId) {
+                            nextActive = filtered[0]?.id || null;
+                            nextUrl = filtered[0]?.url || null;
+                          }
+                          updateState({
+                            videoBucket: filtered,
+                            activeClipId: nextActive,
+                            clipUrl: nextUrl,
+                          });
+                        }}
+                        className="p-1 hover:bg-red-950/30 text-zinc-600 hover:text-red-400 rounded transition-colors"
+                        title="Delete clip"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </section>
+
       {apActive && (
          <div className="mx-3 mt-3 mb-0 p-3 border border-red-900/50 bg-red-950/20 rounded shadow-[inset_0_0_20px_rgba(239,68,68,0.05)]">
             <h2 className="text-red-500 font-mono text-[11px] uppercase tracking-widest mb-3 flex items-center gap-2 font-bold">
@@ -488,152 +679,6 @@ export function ControlDeck({ state, updateState, reset, hasCameraError }: Contr
       )}
 
       <div className="px-3 py-3 flex-1 space-y-4">
-        {/* INPUT DECK */}
-        <section>
-          <h2 className="text-[10px] text-zinc-400 uppercase tracking-widest font-mono border-b border-zinc-800 pb-1 mb-2 flex items-center gap-2">
-            <Radio className="w-3 h-3 text-fuchsia-500" /> SOURCE // MATRIX
-          </h2>
-          <div className="grid grid-cols-2 gap-2 mb-4">
-            <TogglePad label="CAM (Live)" active={state.sourceType === 'camera'} onClick={() => updateState({ sourceType: 'camera' })} highlight="purple" />
-            <TogglePad label="MEM (Clip)" active={state.sourceType === 'clip'} onClick={() => updateState({ sourceType: 'clip' })} highlight="purple" />
-          </div>
-
-          <div className="mb-4 flex flex-col gap-1.5">
-            <span className="text-[10px] text-zinc-500 uppercase tracking-widest font-mono mb-1">Canvas Format</span>
-            <div className="grid grid-cols-4 gap-1">
-               <TogglePad label="FREE" active={state.aspectRatio === 'free'} onClick={() => updateState({ aspectRatio: 'free' })} highlight="purple" />
-               <TogglePad label="16:9" active={state.aspectRatio === '16:9'} onClick={() => updateState({ aspectRatio: '16:9' })} highlight="purple" />
-               <TogglePad label="4:3" active={state.aspectRatio === '4:3'} onClick={() => updateState({ aspectRatio: '4:3' })} highlight="purple" />
-               <TogglePad label="9:16" active={state.aspectRatio === '9:16'} onClick={() => updateState({ aspectRatio: '9:16' })} highlight="purple" />
-               <TogglePad label="1:1" active={state.aspectRatio === '1:1'} onClick={() => updateState({ aspectRatio: '1:1' })} highlight="purple" />
-               <TogglePad label="21:9" active={state.aspectRatio === '21:9'} onClick={() => updateState({ aspectRatio: '21:9' })} highlight="purple" />
-            </div>
-          </div>
-
-          {state.sourceType === 'clip' && (
-             <div className="mt-4 space-y-4">
-                <div className="flex border border-zinc-800 rounded bg-black/40 overflow-hidden divide-x divide-zinc-800">
-                    <button 
-                       onClick={() => updateState({ clipAudio: !state.clipAudio })}
-                       className={`flex-1 flex items-center justify-center gap-2 py-2 text-[10px] uppercase font-mono tracking-widest transition-all ${state.clipAudio ? 'bg-purple-900/40 text-purple-300' : 'text-zinc-500 hover:bg-zinc-900'}`}
-                    >
-                       CLIP AUDIO {state.clipAudio ? 'ON' : 'OFF'}
-                    </button>
-                </div>
-                <div className="relative overflow-hidden">
-                  <button className="w-full h-10 flex items-center justify-center gap-2 text-[10px] uppercase font-mono tracking-widest border border-dashed border-zinc-700 bg-zinc-800/10 text-zinc-400 hover:bg-purple-950/20 hover:border-purple-500 hover:text-purple-300 transition-all rounded-sm cursor-pointer">
-                    <Upload className="w-4 h-4" />
-                    SELECT & IMPORT VIDEO CLIPS
-                  </button>
-                  <input
-                    type="file"
-                    accept="video/*"
-                    multiple
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer text-[0px]"
-                    onChange={(e) => {
-                      const files = e.target.files;
-                      if (files && files.length > 0) {
-                        const newClips = Array.from(files).map((file: any) => {
-                          const url = URL.createObjectURL(file as File);
-                          const id = `clip-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-                          const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
-                          return {
-                            id,
-                            name: file.name.length > 25 ? file.name.substring(0, 21) + "..." : file.name,
-                            url,
-                            size: `${sizeMB} MB`
-                          };
-                        });
-                        
-                        const mergedBucket = [...(state.videoBucket || []), ...newClips];
-                        updateState({
-                          videoBucket: mergedBucket,
-                          activeClipId: newClips[newClips.length - 1].id,
-                          clipUrl: newClips[newClips.length - 1].url,
-                          sourceType: 'clip'
-                        });
-                        
-                        // Clear the input so identical files can be selected again if needed
-                        e.target.value = '';
-                      }
-                    }}
-                  />
-                </div>
-
-                {state.videoBucket && state.videoBucket.length > 0 && (
-                  <div className="border border-zinc-800/70 bg-black/60 p-3 rounded-sm shadow-inner">
-                    <div className="flex justify-between items-center mb-2 pb-1.5 border-b border-zinc-900">
-                      <span className="text-[9px] text-zinc-500 uppercase tracking-widest font-mono">
-                        ARCHIVE BIN / CLIPS ({state.videoBucket.length})
-                      </span>
-                      <button 
-                         onClick={() => updateState({ videoBucket: [], activeClipId: null, clipUrl: null })} 
-                         className="text-[8px] text-zinc-600 hover:text-red-400 uppercase font-mono tracking-wider transition-colors"
-                      >
-                         Purge Bin
-                      </button>
-                    </div>
-                    <div className="space-y-1 max-h-48 overflow-y-auto custom-scrollbar">
-                      {state.videoBucket.map((clip) => {
-                        const isActive = state.activeClipId === clip.id;
-                        return (
-                          <div 
-                            key={clip.id} 
-                            className={`flex items-center justify-between p-2 rounded transition-all ${
-                              isActive 
-                                ? 'bg-purple-950/20 border border-purple-500/50 text-purple-300 shadow-[0_0_10px_rgba(168,85,247,0.1)]' 
-                                : 'bg-zinc-950/80 border border-zinc-905 text-zinc-500 hover:border-zinc-800 hover:text-zinc-300'
-                            }`}
-                          >
-                            <button 
-                              onClick={() => {
-                                updateState({ activeClipId: clip.id, clipUrl: clip.url, sourceType: 'clip' });
-                              }}
-                              className="flex-1 flex flex-col min-w-0 pr-2 align-middle text-left cursor-pointer"
-                            >
-                              <span className="text-[10px] font-mono truncate font-medium tracking-wide">
-                                {clip.name}
-                              </span>
-                              {clip.size && (
-                                <span className="text-[8px] font-mono text-zinc-650">
-                                  SIZE: {clip.size}
-                                </span>
-                              )}
-                            </button>
-                            {state.videoBucket.length > 1 && (
-                              <button 
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  const filtered = state.videoBucket.filter(c => c.id !== clip.id);
-                                  let nextActive = state.activeClipId;
-                                  let nextUrl = state.clipUrl;
-                                  if (clip.id === state.activeClipId) {
-                                    nextActive = filtered[0]?.id || null;
-                                    nextUrl = filtered[0]?.url || null;
-                                  }
-                                  updateState({
-                                    videoBucket: filtered,
-                                    activeClipId: nextActive,
-                                    clipUrl: nextUrl
-                                  });
-                                }}
-                                className="p-1 hover:bg-red-950/30 text-zinc-650 hover:text-red-400 rounded transition-colors"
-                                title="Delete clip"
-                              >
-                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                </svg>
-                              </button>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-             </div>
-          )}
-        </section>
 
         {/* DECK A */}
         <section className={`transition-all duration-500 ${apGeo ? 'opacity-30 pointer-events-none' : 'opacity-100'}`}>
