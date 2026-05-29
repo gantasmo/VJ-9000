@@ -759,6 +759,16 @@ export function ControlDeck({ state, updateState, reset, hasCameraError }: Contr
              <TogglePad label="SCN" active={state.scanlines} onClick={() => updateState({ scanlines: !state.scanlines })} />
              <TogglePad label="VIG" active={state.vignette} onClick={() => updateState({ vignette: !state.vignette })} />
           </div>
+
+          {/* G1 effect tier — new looks layered onto the existing CSS
+              filter chain. Cheap (GPU-accelerated by the browser),
+              composable with everything above. */}
+          <div className="mt-3 space-y-1 pt-2 border-t border-yellow-900/20">
+            <span className="text-[8px] font-mono uppercase tracking-widest text-yellow-500/60 block mb-1">FX TIER · LOOKS</span>
+            <Fader paramKey="fxSepia" label="Sepia" min={0} max={1} step={0.01} value={state.fxSepia ?? 0} onChange={(v: number) => updateState({ fxSepia: v })} />
+            <Fader paramKey="fxGrayscale" label="Grayscale" min={0} max={1} step={0.01} value={state.fxGrayscale ?? 0} onChange={(v: number) => updateState({ fxGrayscale: v })} />
+            <Fader paramKey="fxBlur" label="Soft Blur" min={0} max={1} step={0.01} value={state.fxBlur ?? 0} onChange={(v: number) => updateState({ fxBlur: v })} />
+          </div>
         </section>
       </div>
       

@@ -73,6 +73,17 @@ export interface VJState {
   scanlines: boolean;
   vignette: boolean;
   crt: boolean;
+
+  // G1 effect tier — CSS-filter-driven looks that compose directly
+  // into the existing canvas.style.filter chain. Cheap and
+  // GPU-accelerated; add new entries here and wire into the styleStr
+  // string in VideoOutput.tsx.
+  /** Sepia tone amount 0..1. 0 = none, 1 = full sepia. */
+  fxSepia?: number;
+  /** Grayscale amount 0..1. */
+  fxGrayscale?: number;
+  /** Gaussian-style soft blur, slider value 0..1 maps to 0..20px. */
+  fxBlur?: number;
   
   // Sequencing
   bpm: number;
@@ -156,6 +167,9 @@ export const DEFAULT_VJ_STATE: VJState = {
   scanlines: true,
   vignette: true,
   crt: true,
+  fxSepia: 0,
+  fxGrayscale: 0,
+  fxBlur: 0,
   
   bpm: 128,
   autoLFO: false,

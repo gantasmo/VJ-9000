@@ -877,12 +877,23 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwit
          }
       }
 
+      // G1 effect tier — CSS filter knobs. Each slider gates a single
+      // filter expression so unused effects cost nothing at render time.
+      const sepiaAmt = s.fxSepia ?? 0;
+      const grayAmt = s.fxGrayscale ?? 0;
+      const blurAmt = s.fxBlur ?? 0;
+      const fxFilters =
+        (sepiaAmt > 0 ? `sepia(${(sepiaAmt * 100).toFixed(0)}%) ` : '') +
+        (grayAmt > 0 ? `grayscale(${(grayAmt * 100).toFixed(0)}%) ` : '') +
+        (blurAmt > 0 ? `blur(${(blurAmt * 20).toFixed(1)}px) ` : '');
+
       const styleStr = `
         hue-rotate(${Math.floor(finalHue)}deg)
         saturate(${currentSat}%)
         contrast(${currentContrast}%)
         brightness(${currentBright}%)
         ${currentInvert ? 'invert(100%)' : ''}
+        ${fxFilters}
         ${customFilters}
       `;
       if (canvas.style.filter !== styleStr) {
