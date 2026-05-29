@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { VJState, VideoClip, DEFAULT_VJ_STATE } from './types';
 import { useMedia } from './useMedia';
 import { useAudioAnalyzer } from './useAudioAnalyzer';
@@ -59,9 +59,90 @@ export default function App() {
   const [vjState, setVjState] = useState<VJState>(() => loadSavedState());
   const [routerError, setRouterError] = useState<string | null>(null);
   const [lastSeenCc, setLastSeenCc] = useState<{ cc: number; value: number; channel: number } | null>(null);
+  const pendingSa3PlayRef = useRef<Window | null>(null);
 
   const { videoRef, error, isInitializing } = useMedia(vjState.sourceType, vjState.clipUrl);
   const { getAudioLevels } = useAudioAnalyzer(vjState.audioReactive);
+
+  // SA3 → VJ playback commands. The PlayerFooter in SA3 sends
+  // { type: 'sa3-vj/playback', action: 'play' | 'pause' } when the
+  // user clicks the main Play/Pause button while on the VJ tab. We
+  // forward that to the actual <video> element here. After the
+  // play/pause settles we echo back the resulting state so SA3's UI
+  // shows the right icon.
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      const d = event.data;
+      if (!d || typeof d !== 'object') return;
+      if (d.type !== 'sa3-vj/playback') return;
+      const video = videoRef.current;
+      const echo = (state: 'playing' | 'paused', detail?: string) => {
+        try {
+          (event.source as Window | null)?.postMessage(
+            { type: 'sa3-vj/playback-state', state, detail },
+            '*',
+          );
+        } catch { /* parent not reachable; ignore */ }
+      };
+      if (d.action === 'play') {
+        if (!video) {
+          echo('paused', 'video element unavailable');
+          return;
+        }
+        if (vjState.sourceType === 'clip' && !vjState.clipUrl && vjState.videoBucket.length > 0) {
+          const fallback = vjState.videoBucket.find((clip) => clip.id === vjState.activeClipId) ?? vjState.videoBucket[0];
+          pendingSa3PlayRef.current = event.source as Window | null;
+          setVjState((prev) => ({
+            ...prev,
+            sourceType: 'clip',
+            activeClipId: fallback.id,
+            clipUrl: fallback.url,
+            clipLabel: fallback.name,
+            clipKind: fallback.kind ?? 'video',
+          }));
+          return;
+        }
+        if (vjState.sourceType === 'clip' && !vjState.clipUrl) {
+          echo('paused', 'no clip loaded');
+          return;
+        }
+        video.play().then(() => echo('playing')).catch((err) => {
+          echo('paused', err instanceof Error ? err.message : String(err));
+        });
+      } else if (d.action === 'pause') {
+        pendingSa3PlayRef.current = null;
+        if (!video) {
+          echo('paused', 'video element unavailable');
+          return;
+        }
+        video.pause();
+        echo('paused');
+      }
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [videoRef, vjState.activeClipId, vjState.clipUrl, vjState.sourceType, vjState.videoBucket]);
+
+  useEffect(() => {
+    if (!pendingSa3PlayRef.current || !vjState.clipUrl) return;
+    const source = pendingSa3PlayRef.current;
+    const video = videoRef.current;
+    if (!video) return;
+    const echo = (state: 'playing' | 'paused', detail?: string) => {
+      try {
+        source.postMessage({ type: 'sa3-vj/playback-state', state, detail }, '*');
+      } catch { /* parent not reachable; ignore */ }
+    };
+    const playAfterSrcSettles = () => {
+      video.play().then(() => echo('playing')).catch((err) => {
+        echo('paused', err instanceof Error ? err.message : String(err));
+      });
+    };
+    if (video.readyState >= 2) playAfterSrcSettles();
+    else video.addEventListener('loadeddata', playAfterSrcSettles, { once: true });
+    pendingSa3PlayRef.current = null;
+    return () => video.removeEventListener('loadeddata', playAfterSrcSettles);
+  }, [videoRef, vjState.clipUrl]);
 
   const updateState = (updates: Partial<VJState>) => {
     setVjState((prev) => ({ ...prev, ...updates }));
