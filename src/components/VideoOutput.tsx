@@ -218,6 +218,70 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwit
     const fxScratch = document.createElement('canvas');
     const fxScratchCtx = fxScratch.getContext('2d', { alpha: false });
 
+    // ── Category B scratch buffers (pseudo-depth volumetric looks) ──
+    // A single shared "depth proxy" is derived once per frame from a
+    // heavily-blurred luminance pass: blurring collapses high-frequency
+    // detail so broad bright/in-focus regions read as "near" and dark/
+    // smooth regions as "far". DEPTH_W/H is small; the blur is a couple
+    // of box passes so the whole thing stays well under a millisecond.
+    // depthProxy[i] in 0..1 (0 = far, 1 = near). Reused by fog, tilt-
+    // shift, z-planes, and the depth-edge outline passes below.
+    const DEPTH_W = 96;
+    const DEPTH_H = 54;
+    const depthProxy = new Float32Array(DEPTH_W * DEPTH_H);
+    const depthTmp = new Float32Array(DEPTH_W * DEPTH_H);
+    const depthSampleCanvas = document.createElement('canvas');
+    depthSampleCanvas.width = DEPTH_W;
+    depthSampleCanvas.height = DEPTH_H;
+    const depthSampleCtx = depthSampleCanvas.getContext('2d', { alpha: false, willReadFrequently: true });
+    // Buffer the depth field is painted into for compositing (fog tint,
+    // outline ink) at full canvas size via upscaled drawImage.
+    const depthCanvas = document.createElement('canvas');
+    depthCanvas.width = DEPTH_W;
+    depthCanvas.height = DEPTH_H;
+    const depthCtx = depthCanvas.getContext('2d', { alpha: true });
+    const depthImage = depthCtx ? depthCtx.createImageData(DEPTH_W, DEPTH_H) : null;
+    let depthBuilt = false;
+
+    // Builds depthProxy from the current main canvas. Lazy: only the
+    // first Category-B pass each frame that needs depth calls this, and
+    // it flips depthBuilt so later passes reuse the same field. The
+    // caller resets depthBuilt = false at the top of each frame.
+    const buildDepthProxy = () => {
+      if (!depthSampleCtx || depthBuilt) return;
+      depthSampleCtx.drawImage(canvas, 0, 0, DEPTH_W, DEPTH_H);
+      const d = depthSampleCtx.getImageData(0, 0, DEPTH_W, DEPTH_H).data;
+      for (let i = 0; i < DEPTH_W * DEPTH_H; i++) {
+        const p = i * 4;
+        depthProxy[i] = (d[p] * 0.299 + d[p + 1] * 0.587 + d[p + 2] * 0.114) / 255;
+      }
+      // Two separable box-blur passes approximate a Gaussian so the
+      // proxy is smooth (depth shouldn't have hard pixel edges).
+      for (let pass = 0; pass < 2; pass++) {
+        // horizontal
+        for (let y = 0; y < DEPTH_H; y++) {
+          for (let x = 0; x < DEPTH_W; x++) {
+            const x0 = Math.max(0, x - 2);
+            const x1 = Math.min(DEPTH_W - 1, x + 2);
+            let sum = 0;
+            for (let xx = x0; xx <= x1; xx++) sum += depthProxy[y * DEPTH_W + xx];
+            depthTmp[y * DEPTH_W + x] = sum / (x1 - x0 + 1);
+          }
+        }
+        // vertical
+        for (let y = 0; y < DEPTH_H; y++) {
+          for (let x = 0; x < DEPTH_W; x++) {
+            const y0 = Math.max(0, y - 2);
+            const y1 = Math.min(DEPTH_H - 1, y + 2);
+            let sum = 0;
+            for (let yy = y0; yy <= y1; yy++) sum += depthTmp[yy * DEPTH_W + x];
+            depthProxy[y * DEPTH_W + x] = sum / (y1 - y0 + 1);
+          }
+        }
+      }
+      depthBuilt = true;
+    };
+
     
     // Frame buffer for backskip and time displacement
     const bufferSize = 60;
@@ -278,6 +342,10 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwit
       const w = canvas.width;
       const h = canvas.height;
       if (w === 0 || h === 0) return;
+
+      // Category-B depth proxy is rebuilt on demand once per frame; reset
+      // the cache flag here so the first B pass that needs it recomputes.
+      depthBuilt = false;
 
       // --- PARAMETER RESOLUTION ---
       let currentGlitch = s.glitch;
@@ -1118,6 +1186,124 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwit
         ctx.globalAlpha = amt;
         ctx.imageSmoothingEnabled = true;
         ctx.drawImage(sdfCanvas, 0, 0, w, h);
+        ctx.restore();
+      }
+
+      // --- CATEGORY B: METRIC DEPTH FOG -----------------------------
+      // Fades a fog colour into the frame weighted by the depth proxy so
+      // far (dark/smooth) regions wash out toward the fog colour while
+      // near (bright) regions stay clear — the classic distance-fog
+      // volumetric read. Bass thickens the fog when audioReactive is on.
+      if ((s.depthFog ?? 0) > 0 && depthCtx && depthImage) {
+        buildDepthProxy();
+        const amt = (s.depthFog ?? 0) * (s.audioReactive ? 1 + powBass * 0.6 : 1);
+        const dd = depthImage.data;
+        // Fog is cool blue-grey; alpha grows with distance (1 - depth).
+        for (let i = 0; i < DEPTH_W * DEPTH_H; i++) {
+          const far = 1 - depthProxy[i];
+          dd[i * 4] = 150;
+          dd[i * 4 + 1] = 170;
+          dd[i * 4 + 2] = 200;
+          dd[i * 4 + 3] = Math.round(Math.min(1, far * amt) * 255);
+        }
+        depthCtx.putImageData(depthImage, 0, 0);
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 1.0;
+        ctx.imageSmoothingEnabled = true;
+        ctx.drawImage(depthCanvas, 0, 0, w, h);
+        ctx.restore();
+      }
+
+      // --- CATEGORY B: Z-QUANTIZED PLANE SPLITS ---------------------
+      // Buckets the depth proxy into near/mid/far planes and grades each
+      // independently (the far plane is cooled + darkened, the near plane
+      // warmed + brightened) so the frame reads as separated depth slabs.
+      if ((s.zPlanes ?? 0) > 0 && depthCtx && depthImage) {
+        buildDepthProxy();
+        const amt = s.zPlanes ?? 0;
+        const dd = depthImage.data;
+        for (let i = 0; i < DEPTH_W * DEPTH_H; i++) {
+          const dpt = depthProxy[i];
+          // 3 planes: far (<0.4), mid, near (>0.7).
+          let r = 0, g = 0, b = 0;
+          if (dpt < 0.4) { r = 20; g = 50; b = 120; }        // far → cool blue
+          else if (dpt < 0.7) { r = 60; g = 30; b = 90; }    // mid → violet
+          else { r = 160; g = 90; b = 30; }                   // near → warm amber
+          dd[i * 4] = r;
+          dd[i * 4 + 1] = g;
+          dd[i * 4 + 2] = b;
+          dd[i * 4 + 3] = Math.round(amt * 160);
+        }
+        depthCtx.putImageData(depthImage, 0, 0);
+        ctx.save();
+        ctx.globalCompositeOperation = 'overlay';
+        ctx.globalAlpha = 1.0;
+        ctx.imageSmoothingEnabled = true;
+        ctx.drawImage(depthCanvas, 0, 0, w, h);
+        ctx.restore();
+      }
+
+      // --- CATEGORY B: TILT-SHIFT MINIATURE -------------------------
+      // Progressively blurs the frame away from a central horizontal
+      // focal band (the "miniature" look). We snapshot the frame, then
+      // draw blurred copies masked to the top and bottom thirds via a
+      // vertical alpha gradient so only the focal band stays sharp.
+      if ((s.tiltShift ?? 0) > 0) {
+        const amt = s.tiltShift ?? 0;
+        if (compostCanvas.width !== w || compostCanvas.height !== h) {
+          compostCanvas.width = w; compostCanvas.height = h;
+        }
+        if (compostCtx) {
+          compostCtx.clearRect(0, 0, w, h);
+          compostCtx.drawImage(canvas, 0, 0);
+          ctx.save();
+          ctx.filter = `blur(${(amt * 8).toFixed(1)}px)`;
+          ctx.imageSmoothingEnabled = true;
+          // Top out-of-focus region.
+          const bandH = h * (0.5 - amt * 0.3);
+          ctx.beginPath();
+          ctx.rect(0, 0, w, bandH);
+          ctx.rect(0, h - bandH, w, bandH);
+          ctx.clip();
+          ctx.drawImage(compostCanvas, 0, 0, w, h);
+          ctx.restore();
+        }
+      }
+
+      // --- CATEGORY B: DEPTH-EDGE COMIC OUTLINE ---------------------
+      // Runs a Sobel pass on the depth proxy and inks the geometric
+      // silhouette edges (depth discontinuities) over the frame — a
+      // clean comic/contour outline that follows form rather than texture.
+      if ((s.depthOutline ?? 0) > 0 && depthCtx && depthImage) {
+        buildDepthProxy();
+        const amt = s.depthOutline ?? 0;
+        const dd = depthImage.data;
+        for (let y = 0; y < DEPTH_H; y++) {
+          for (let x = 0; x < DEPTH_W; x++) {
+            const i = y * DEPTH_W + x;
+            const xl = Math.max(0, x - 1), xr = Math.min(DEPTH_W - 1, x + 1);
+            const yt = Math.max(0, y - 1), yb = Math.min(DEPTH_H - 1, y + 1);
+            const gx =
+              depthProxy[yt * DEPTH_W + xr] + 2 * depthProxy[y * DEPTH_W + xr] + depthProxy[yb * DEPTH_W + xr] -
+              depthProxy[yt * DEPTH_W + xl] - 2 * depthProxy[y * DEPTH_W + xl] - depthProxy[yb * DEPTH_W + xl];
+            const gy =
+              depthProxy[yb * DEPTH_W + xl] + 2 * depthProxy[yb * DEPTH_W + x] + depthProxy[yb * DEPTH_W + xr] -
+              depthProxy[yt * DEPTH_W + xl] - 2 * depthProxy[yt * DEPTH_W + x] - depthProxy[yt * DEPTH_W + xr];
+            const mag = Math.min(1, Math.sqrt(gx * gx + gy * gy) * 4);
+            const ink = mag > 0.35 ? 255 : 0;
+            dd[i * 4] = 0;
+            dd[i * 4 + 1] = 0;
+            dd[i * 4 + 2] = 0;
+            dd[i * 4 + 3] = Math.round((ink / 255) * amt * 255);
+          }
+        }
+        depthCtx.putImageData(depthImage, 0, 0);
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 1.0;
+        ctx.imageSmoothingEnabled = true;
+        ctx.drawImage(depthCanvas, 0, 0, w, h);
         ctx.restore();
       }
 

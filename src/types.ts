@@ -83,6 +83,27 @@ export interface VJState {
    *  along it. Volume energy amplifies the displacement. */
   fluidDisplace: number;
 
+  // ── Category B — depth / spatial / volumetric (pseudo-depth) ──────
+  // These derive a cheap per-frame "depth proxy" from luminance (a
+  // heavily-blurred luma channel approximates near/far: brighter, more
+  // in-focus regions read as nearer). No ML model is required; the
+  // proxy drives volumetric-style grades that read as 3D. Entries that
+  // need a *true* metric depth net (point cloud, occlusion AR, RGBD,
+  // camera-pose dolly, normals relight, depth-collision particles)
+  // remain 'planned' until a depth runtime is wired in.
+  /** Metric Depth Fog. 0 disables; 0..1 fades a fog colour into the
+   *  frame by depth so far regions wash out. Bass thickens the fog. */
+  depthFog: number;
+  /** Tilt-Shift Miniature. 0 disables; 0..1 progressively blurs the
+   *  frame away from a central horizontal focal band. */
+  tiltShift: number;
+  /** Z-Quantized Plane Splits. 0 disables; 0..1 segments the frame
+   *  into near/mid/far depth bands and grades each (hue/contrast). */
+  zPlanes: number;
+  /** Depth-Edge Comic Outline. 0 disables; 0..1 runs a Sobel pass on
+   *  the depth proxy and inks the geometric silhouette edges. */
+  depthOutline: number;
+
 
   // Performance
   /** Render-scale tier. 'high' renders the canvas at full container
@@ -193,6 +214,11 @@ export const DEFAULT_VJ_STATE: VJState = {
   sdfPortal: 0,
   topographic: 0,
   fluidDisplace: 0,
+
+  depthFog: 0,
+  tiltShift: 0,
+  zPlanes: 0,
+  depthOutline: 0,
 
   performanceMode: 'high',
 
