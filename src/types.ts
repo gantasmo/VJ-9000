@@ -151,6 +151,14 @@ export interface VJState {
    *  derived from the live canvas's current aspect ratio so the
    *  recorded file matches what the user sees. */
   recordQuality?: '720p' | '1080p' | '4K';
+  /** Delivery codec for the export. The browser always records webm
+   *  (VP9); on stop the take is handed to the SA3 backend which ffmpeg-
+   *  transcodes to this codec with audio muxed in. h264/h265 -> .mp4,
+   *  prores -> .mov, pngseq -> zipped PNG frames + WAV. */
+  recordCodec?: 'h264' | 'h265' | 'prores' | 'pngseq';
+  /** Subfolder (under the backend's configured export root) the
+   *  transcoded file lands in. Empty = the export root itself. */
+  exportSubfolder?: string;
   aspectRatio: string;
   
   // Timecode
@@ -176,7 +184,21 @@ export interface VJState {
   apRampType: 'none' | 'linear' | 'exponential' | 'sigmoid';
   apSubdueDepth: number;
   apModulateIntensity: boolean;
+
+  // ── Live-set ergonomics (not persisted as creative state) ─────────
+  /** Effect SOLO. When set to a plugin id, the renderer bypasses every
+   *  other effect pass and shows ONLY that effect over the raw source,
+   *  so the user can dial a single effect's mapping in isolation while
+   *  setting up MIDI. null = normal (all enabled effects compose). The
+   *  id matches pluginRegistry's PluginDef.id. */
+  soloPluginId: string | null;
+  /** Pushed by the SA3 host (sa3-vj/visibility) — false when the VJ tab
+   *  is backgrounded so the render loop can park itself (≈0% GPU). True
+   *  when standalone / visible. The renderer reads the live bridge value
+   *  directly; this field mirrors it for any UI that wants to show it. */
+  isTabVisible: boolean;
 }
+
 
 export const DEFAULT_VJ_STATE: VJState = {
   layoutMode: 'standard',
@@ -245,6 +267,8 @@ export const DEFAULT_VJ_STATE: VJState = {
   autoPilot: false,
   recording: false,
   recordQuality: '1080p',
+  recordCodec: 'h264',
+  exportSubfolder: '',
   aspectRatio: 'free',
   
   playbackSpeed: 1.0,
@@ -268,5 +292,9 @@ export const DEFAULT_VJ_STATE: VJState = {
   apRampType: 'linear',
   apSubdueDepth: 0.1,
   apModulateIntensity: true,
+
+  soloPluginId: null,
+  isTabVisible: true,
 };
+
 

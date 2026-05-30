@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { VJState, DEFAULT_VJ_STATE } from '../types';
-import { Activity, RefreshCcw, Upload, Sliders, Cpu, Radio, Hash, Video, LayoutPanelLeft, Columns, Monitor, Maximize } from 'lucide-react';
+import { Activity, RefreshCcw, Upload, Sliders, Cpu, Radio, Hash, Video, LayoutPanelLeft, Columns, Monitor, Maximize, FolderOpen } from 'lucide-react';
+import { PluginsPanel } from './PluginsPanel';
 
 const AUTOPILOT_EFFECTS = [
   { key: 'feedback', label: 'Feedback Wash' },
@@ -132,15 +133,57 @@ export function ControlDeck({ state, updateState, reset, hasCameraError }: Contr
       {/* Header — tightened: smaller title font, single line of padding,
           subtitle sits flush under title. Layout-mode + reset buttons
           shrink to icon-fit. */}
-      <div className="px-3 py-1.5 border-b border-zinc-800 flex items-center justify-between sticky top-0 bg-[#111] z-50 shadow-md">
-        <div className="flex flex-col leading-tight">
-          <h1 className="text-white font-mono font-bold tracking-widest text-[13px] flex items-center gap-1.5">
-            <Activity className="w-3.5 h-3.5 text-cyan-500" />
-            LUMINA // OMEGA
-          </h1>
-          <span className={`text-[8px] uppercase tracking-[0.18em] mt-0.5 ${hasCameraError ? 'text-red-500' : 'text-zinc-500'}`}>
-            {hasCameraError ? 'CAMERA OFFLINE // SYS ERR' : 'OPTO-SENSOR ACTIVE // LIVE'}
-          </span>
+      <div className="px-2 py-1.5 border-b border-zinc-800 flex items-center justify-between gap-1 sticky top-0 bg-[#111] z-50 shadow-md">
+        {/* REC + export controls — replaces the former LUMINA // OMEGA
+            branding. Viewport-layout + reset buttons stay on the right. */}
+        <div className="flex items-center gap-1 min-w-0">
+          <button
+            onClick={() => updateState({ recording: !state.recording })}
+            className={`flex items-center gap-1 px-2 py-1 text-[9px] uppercase font-mono tracking-widest border rounded transition-all shrink-0 ${
+              state.recording
+                ? 'bg-red-900/30 border-red-500 text-red-300 shadow-[0_0_12px_rgba(239,68,68,0.5)] animate-pulse'
+                : 'bg-black border-zinc-700 text-zinc-400 hover:border-red-500 hover:text-red-400'
+            }`}
+            title={state.recording ? 'Stop & export the take to the selected codec' : 'Start recording — exports to the selected codec on stop'}
+          >
+            <span className={`w-2 h-2 rounded-full ${state.recording ? 'bg-red-500' : 'bg-red-900/50'}`} />
+            {state.recording ? 'STOP' : 'REC'}
+          </button>
+          {/* Resolution — locked mid-take so a switch can't tear the
+              captureStream output. */}
+          <select
+            value={state.recordQuality ?? '1080p'}
+            onChange={(e) => updateState({ recordQuality: e.target.value as '720p' | '1080p' | '4K' })}
+            disabled={state.recording}
+            className="bg-black border border-zinc-700 text-[9px] font-mono uppercase tracking-wider text-zinc-300 px-1 py-1 rounded cursor-pointer hover:border-red-500/50 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+            title="Recording resolution — HD 720p · FHD 1080p · UHD 4K. Locks during a take."
+          >
+            <option value="720p">HD</option>
+            <option value="1080p">FHD</option>
+            <option value="4K">UHD</option>
+          </select>
+          {/* Delivery codec — the backend ffmpeg-transcodes the webm take
+              into this on stop. */}
+          <select
+            value={state.recordCodec ?? 'h264'}
+            onChange={(e) => updateState({ recordCodec: e.target.value as VJState['recordCodec'] })}
+            disabled={state.recording}
+            className="bg-black border border-zinc-700 text-[9px] font-mono uppercase tracking-wider text-zinc-300 px-1 py-1 rounded cursor-pointer hover:border-red-500/50 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+            title="Export codec — H264/H265 → .mp4 · ProRes → .mov · PNG SEQ → zipped frames + WAV. Locks during a take."
+          >
+            <option value="h264">H264</option>
+            <option value="h265">H265</option>
+            <option value="prores">ProRes</option>
+            <option value="pngseq">PNG SEQ</option>
+          </select>
+          {hasCameraError && (
+            <span
+              className="text-[8px] font-mono uppercase tracking-wider text-red-500 shrink-0"
+              title="Camera offline / sys error"
+            >
+              CAM ERR
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-0.5">
           <button
@@ -180,32 +223,22 @@ export function ControlDeck({ state, updateState, reset, hasCameraError }: Contr
         </div>
       </div>
 
-      {/* RECORD BAR */}
-      <div className="bg-zinc-950 border-b border-zinc-800 px-3 py-1.5 flex items-center justify-center gap-2">
-        <button
-          onClick={() => updateState({ recording: !state.recording })}
-          className={`flex items-center gap-1.5 px-3 py-1 text-[9px] uppercase font-mono tracking-widest border rounded transition-all ${
-            state.recording
-              ? 'bg-red-900/30 border-red-500 text-red-300 shadow-[0_0_15px_rgba(239,68,68,0.5)] animate-pulse'
-              : 'bg-black border-zinc-700 text-zinc-400 hover:border-red-500 hover:text-red-400'
-          }`}
-        >
-          <div className={`w-2 h-2 rounded-full ${state.recording ? 'bg-red-500' : 'bg-red-900/50'}`}></div>
-          {state.recording ? 'RECORDING... (CLICK TO STOP & SAVE)' : 'REC EXPORT TO FILE'}
-        </button>
-        {/* Quality dropdown — disabled mid-take so a switch can't tear
-            the captureStream output. */}
-        <select
-          value={state.recordQuality ?? '1080p'}
-          onChange={(e) => updateState({ recordQuality: e.target.value as '720p' | '1080p' | '4K' })}
+      {/* EXPORT DESTINATION — the per-take subfolder under the export
+          root configured in SA3 Settings → VJ. The take records as webm,
+          then the backend ffmpeg-transcodes it to the codec chosen above
+          and writes it into <export root>/<subfolder>/. */}
+      <div className="bg-zinc-950 border-b border-zinc-800 px-2 py-1 flex items-center gap-1.5">
+        <FolderOpen className="w-3 h-3 text-zinc-500 shrink-0" />
+        <input
+          type="text"
+          value={state.exportSubfolder ?? ''}
+          onChange={(e) => updateState({ exportSubfolder: e.target.value })}
           disabled={state.recording}
-          className="bg-black border border-zinc-700 text-[9px] font-mono uppercase tracking-widest text-zinc-300 px-1.5 py-1 rounded cursor-pointer hover:border-red-500/50 disabled:opacity-50 disabled:cursor-not-allowed"
-          title="Recording resolution — HD 720p, FHD 1080p, UHD 4K. Locks during a take."
-        >
-          <option value="720p">HD</option>
-          <option value="1080p">FHD</option>
-          <option value="4K">UHD</option>
-        </select>
+          placeholder="export subfolder (optional)"
+          spellCheck={false}
+          className="flex-1 min-w-0 bg-black border border-zinc-800 text-[9px] font-mono text-zinc-300 px-1.5 py-1 rounded placeholder:text-zinc-700 focus:border-red-500/50 focus:outline-none disabled:opacity-50"
+          title="Subfolder under the configured export root. Leave blank to save into the root."
+        />
       </div>
       
       {/* INPUT DECK — moved up above the autopilot override per UX
@@ -716,8 +749,28 @@ export function ControlDeck({ state, updateState, reset, hasCameraError }: Contr
           </div>
           
           <Fader paramKey="tiling" label="Grid Tiling" min={1} max={8} step={1} value={state.tiling} onChange={(v: number) => updateState({ tiling: v })} unit="x" />
+          <Fader paramKey="radialSpokes" label="Radial Mirror (Spokes)" min={0} max={24} step={1} value={state.radialSpokes ?? 0} onChange={(v: number) => updateState({ radialSpokes: v })} unit="" />
           <Fader paramKey="feedback" label="Feedback Wash" min={0} max={0.99} step={0.01} value={state.feedback} onChange={(v: number) => updateState({ feedback: v })} />
           <Fader paramKey="strobe" label="Strobe Burst" min={0} max={1} step={0.01} value={state.strobe} onChange={(v: number) => updateState({ strobe: v })} />
+
+          {/* Performance tier — scales the renderer's internal canvas
+              resolution. Lower tiers trade sharpness for frame rate on
+              weaker GPUs. */}
+          <div className="mt-3 pt-2 border-t border-cyan-900/20 flex flex-col gap-1.5">
+            <span className="text-[8px] font-mono uppercase tracking-widest text-cyan-500/60 flex items-center gap-1">
+              <Cpu className="w-2.5 h-2.5" /> RENDER PERFORMANCE
+            </span>
+            <div className="grid grid-cols-3 gap-1">
+              {(['high', 'medium', 'low'] as const).map((tier) => (
+                <TogglePad
+                  key={tier}
+                  label={tier === 'high' ? 'HIGH 1.0x' : tier === 'medium' ? 'MED 0.75x' : 'LOW 0.5x'}
+                  active={(state.performanceMode ?? 'high') === tier}
+                  onClick={() => updateState({ performanceMode: tier })}
+                />
+              ))}
+            </div>
+          </div>
         </section>
 
         {/* DECK B */}
@@ -794,6 +847,10 @@ export function ControlDeck({ state, updateState, reset, hasCameraError }: Contr
           <Fader paramKey="slitScan" label="Slit Scan (Y)" min={0} max={1} step={0.01} value={state.slitScan} onChange={(v: number) => updateState({ slitScan: v })} />
         </section>
       </div>
+
+      {/* PLUGINS MANAGER — full effects catalog (Categories A-D) with
+          live controls for implemented plugins. */}
+      <PluginsPanel state={state} updateState={updateState} />
 
       {/* SEQUENCER BLOCK */}
       <div className="px-3 py-2.5 bg-[#0a0a0a] border-t border-cyan-900/30 shadow-[0_-10px_20px_rgba(0,0,0,0.5)] z-10 sticky bottom-0">

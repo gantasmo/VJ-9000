@@ -2,6 +2,120 @@ import React, { useEffect, useRef } from 'react';
 import { VJState } from '../types';
 import { AudioLevels } from '../useAudioAnalyzer';
 import { computeAudioModulation } from '../audioRouting';
+import { getVisibility } from '../sa3Bridge';
+import { PLUGIN_REGISTRY } from '../pluginRegistry';
+
+// SOLO support. Built once from the plugin registry so it stays in sync
+// as plugins are added (no hand-maintained duplicate).
+//   - PLUGIN_PARAM_KEYS: plugin id → the VJState keys that plugin owns.
+//   - EFFECT_NEUTRAL: every effect-owned key → its "off" value (a range
+//     param's min, a toggle's false). Used to silence all other effects.
+const PLUGIN_PARAM_KEYS: Record<string, Array<keyof VJState>> = {};
+const EFFECT_NEUTRAL: Partial<Record<keyof VJState, number | boolean>> = {};
+for (const p of PLUGIN_REGISTRY) {
+  PLUGIN_PARAM_KEYS[p.id] = p.params.map((param) => param.key);
+  for (const param of p.params) {
+    EFFECT_NEUTRAL[param.key] =
+      param.control.kind === 'toggle' ? false : param.control.min;
+  }
+}
+
+/**
+ * SOLO mode. When s.soloPluginId is set, returns a derived state where
+ * every effect-owned parameter is forced to its neutral/off value
+ * EXCEPT the soloed plugin's own params, and the global auto-modulators
+ * (autoPilot / autoLFO) are disabled — so only that single effect shows
+ * over the raw source while the user dials in its MIDI mapping. Audio
+ * reactivity is left intact so reactive mappings can still be tested.
+ * Returns the input unchanged when nothing is soloed (zero overhead).
+ */
+function applySolo(s: VJState): VJState {
+  if (!s.soloPluginId) return s;
+  const keep = new Set(PLUGIN_PARAM_KEYS[s.soloPluginId] ?? []);
+  const next: VJState = { ...s, autoPilot: false, autoLFO: false };
+  for (const key in EFFECT_NEUTRAL) {
+    const k = key as keyof VJState;
+    if (!keep.has(k)) {
+      (next as unknown as Record<string, unknown>)[k] = EFFECT_NEUTRAL[k];
+    }
+  }
+  return next;
+}
+
+
+
+// The SA3 FastAPI backend listens on :8600 on the same host that serves
+// this VJ iframe, so we can reach it for the export transcode. Works for
+// localhost and LAN; a solo-run VJ (no backend) falls back to a webm
+// download (see uploadTake).
+const SA3_BACKEND_PORT = 8600;
+
+function sa3BackendBase(): string {
+  const proto = window.location.protocol === 'https:' ? 'https:' : 'http:';
+  return `${proto}//${window.location.hostname}:${SA3_BACKEND_PORT}`;
+}
+
+/** Hand a recorded webm take to the SA3 backend for ffmpeg transcode to
+ *  the chosen codec (audio muxed in), saved under the configured export
+ *  root / subfolder. Notifies the parent SA3 window so it can log the
+ *  result. On any failure, downloads the raw webm so the take is never
+ *  lost. */
+async function uploadTake(
+  blob: Blob,
+  codec: string,
+  resolution: string,
+  subfolder: string,
+): Promise<void> {
+  const notifyParent = (type: string, detail: Record<string, unknown>) => {
+    try {
+      window.parent?.postMessage({ type, ...detail }, '*');
+    } catch {
+      /* no parent (solo run) — ignore */
+    }
+  };
+  try {
+    const form = new FormData();
+    form.append('file', blob, `take_${new Date().getTime()}.webm`);
+    form.append('codec', codec);
+    form.append('resolution', resolution);
+    form.append('subfolder', subfolder);
+    const res = await fetch(`${sa3BackendBase()}/api/vj/export`, {
+      method: 'POST',
+      body: form,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`export failed (${res.status}): ${text.slice(0, 300)}`);
+    }
+    const data = await res.json();
+    console.log('[vj] export saved:', data.path);
+    notifyParent('sa3-vj/export-done', {
+      path: data.path,
+      filename: data.filename,
+      codec: data.codec,
+      folder: data.folder,
+    });
+  } catch (e) {
+    console.error('[vj] export failed — falling back to webm download', e);
+    notifyParent('sa3-vj/export-error', {
+      message: e instanceof Error ? e.message : String(e),
+    });
+    try {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.style.display = 'none';
+      a.href = url;
+      a.download = `LUMINA_RECORDING_${new Date().getTime()}.webm`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      a.remove();
+    } catch {
+      /* last-ditch — nothing more we can do */
+    }
+  }
+}
+
 
 interface VideoOutputProps {
   vjState: VJState;
@@ -44,7 +158,12 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwit
       // branch (further down) detects a recording in progress and
       // uses scaled drawImage instead of auto-resizing.
       const qualityHeights: Record<string, number> = { '720p': 720, '1080p': 1080, '4K': 2160 };
-      const targetH = qualityHeights[vjState.recordQuality ?? '1080p'] ?? 1080;
+      const resolution = vjState.recordQuality ?? '1080p';
+      const targetH = qualityHeights[resolution] ?? 1080;
+      // Snapshot the export choices now — the selects lock mid-take, so
+      // these can't change before onstop fires.
+      const codec = vjState.recordCodec ?? 'h264';
+      const subfolder = vjState.exportSubfolder ?? '';
       const liveCanvas = canvasRef.current;
       const aspect = liveCanvas && liveCanvas.height > 0
         ? liveCanvas.width / liveCanvas.height
@@ -122,15 +241,11 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwit
         
         recorder.onstop = () => {
           const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.style.display = 'none';
-          a.href = url;
-          a.download = `LUMINA_RECORDING_${new Date().getTime()}.webm`;
-          document.body.appendChild(a);
-          a.click();
-          window.URL.revokeObjectURL(url);
-          a.remove();
+          // Hand the take to the SA3 backend, which ffmpeg-transcodes it
+          // to the chosen codec (audio muxed in) and writes it under the
+          // configured export root / subfolder. Falls back to a raw webm
+          // download if the backend is unreachable (e.g. VJ run solo).
+          void uploadTake(blob, codec, resolution, subfolder);
         };
         
         recorder.start();
@@ -320,10 +435,21 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwit
 
     const renderLoop = (timestamp: number) => {
       animationId = requestAnimationFrame(renderLoop);
-      
+
+      // PARK WHEN HIDDEN. When the SA3 host backgrounds the VJ tab it
+      // posts sa3-vj/visibility:false; we keep the rAF alive (so the
+      // loop resumes instantly when shown again) but skip ALL drawing
+      // and analysis work, dropping the iframe to ≈0% GPU. Always true
+      // standalone, so this is a no-op outside SA3.
+      if (!getVisibility()) return;
+
       if (!video.videoWidth || video.readyState < 2) return;
 
-      const s = stateRef.current;
+      // SOLO mode neutralises every other effect when a plugin is soloed
+      // so the operator can dial one effect's mapping in isolation; a
+      // no-op (returns the same object) when nothing is soloed.
+      const s = applySolo(stateRef.current);
+
       
       // Performance tier scales the internal backing-store resolution
       // while the CSS box (w-full h-full) stays the same size, so the
@@ -689,13 +815,26 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwit
       }
 
       if (s.audioReactive) {
-         currentGlitch = Math.max(currentGlitch, powBass * 0.9);
-         currentGhost = Math.max(currentGhost, powBass * 0.7);
-         currentSplit = Math.max(currentSplit, powBass * 0.5);
-         currentWave = Math.max(currentWave, powBass * 0.4);
-         
-         zoomScale = 1.0 + (powBass * 0.25);
-         
+         // Bass-driven sweetening of the corruption effects. CRITICAL:
+         // scale each push by its OWN base fader so an effect at 0 stays
+         // fully off — previously these were hardcoded (powBass * k)
+         // independent of the faders, which made effects "autoplay" with
+         // the beat even when every slider/MIDI mapping was at zero. Now
+         // a fader at 0 contributes nothing; raising it opens that
+         // effect up to bass modulation. zoomScale is similarly gated so
+         // there's no surprise pulse-zoom on a clean frame.
+         if (s.glitch > 0) currentGlitch = Math.max(currentGlitch, powBass * 0.9 * s.glitch);
+         if (s.rgbGhost > 0) currentGhost = Math.max(currentGhost, powBass * 0.7 * s.rgbGhost);
+         if (s.rgbSplit > 0) currentSplit = Math.max(currentSplit, powBass * 0.5 * s.rgbSplit);
+         if (s.waveWarp > 0) currentWave = Math.max(currentWave, powBass * 0.4 * s.waveWarp);
+
+         // Pulse-zoom only when feedback/geometry are actually in play —
+         // gated on any active geometry/feedback so a bare source frame
+         // doesn't breathe on its own.
+         if (s.feedback > 0 || s.kaleidoscope || s.tiling > 1 || s.radialSpokes >= 2) {
+            zoomScale = 1.0 + (powBass * 0.25);
+         }
+
          if (s.strobe > 0 && powBass > 0.5) {
              isAudioStrobe = true;
          }
@@ -703,6 +842,7 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwit
              currentBackskip = Math.max(currentBackskip, 0.8);
          }
       }
+
 
       if (s.autoLFO) {
          const now = Date.now() / 1000;
