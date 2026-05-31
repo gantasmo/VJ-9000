@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 
 export function useMedia(sourceType: 'camera' | 'clip', clipUrl: string | null) {
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const cameraVideoRef = useRef<HTMLVideoElement>(null);
+  const clipVideoRef = useRef<HTMLVideoElement>(null);
+  const activeVideoRef = useRef<HTMLVideoElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
   const streamRef = useRef<MediaStream | null>(null);
@@ -10,20 +12,17 @@ export function useMedia(sourceType: 'camera' | 'clip', clipUrl: string | null) 
     let active = true;
 
     const setupSource = async () => {
-      const video = videoRef.current;
-      if (!video) return;
+      const camVideo = cameraVideoRef.current;
+      const memVideo = clipVideoRef.current;
+      if (!camVideo || !memVideo) return;
 
-      if (sourceType === 'clip') {
-        // Halt camera feed memory leak
-        if (streamRef.current) {
-          streamRef.current.getTracks().forEach(t => t.stop());
-          streamRef.current = null;
-        }
-        video.srcObject = null;
-        
-        if (clipUrl) {
-          video.src = clipUrl;
-          video.loop = true;
+      activeVideoRef.current = sourceType === 'clip' ? memVideo : camVideo;
+
+      // Keep memory clip loaded independently so CAM/MEM crossfade can
+      // blend both sources live instead of hard switching.
+      if (clipUrl) {
+          memVideo.src = clipUrl;
+          memVideo.loop = true;
           // Restored from upstream commit cedc007 — the 2f734dc
           // refactor dropped this and broke clip playback after the
           // first decode error (blob expired, codec mismatch, etc).
@@ -34,34 +33,21 @@ export function useMedia(sourceType: 'camera' | 'clip', clipUrl: string | null) 
           // alive and the user retry / pick another clip.
           const onErr = () => {
             if (!active) return;
-            const code = video.error?.code;
-            const msg = video.error?.message || `MediaError code ${code ?? '?'}`;
+            const code = memVideo.error?.code;
+            const msg = memVideo.error?.message || `MediaError code ${code ?? '?'}`;
             setError(`Video Decode Failure: ${msg}`);
           };
-          video.onerror = onErr;
-          video.play().catch((e) => {
+          memVideo.onerror = onErr;
+          memVideo.play().catch((e) => {
             if (active) setError('Video Decode Failure: ' + (e?.message ?? String(e)));
           });
-          if (active) {
-            // Clear any prior error optimistically; onerror above will
-            // set it again if the new clip is broken.
-            setError(null);
-            setIsInitializing(false);
-          }
-        } else {
-          video.onerror = null;
-          video.src = '';
-          if (active) {
-            setError(null);
-            setIsInitializing(false);
-          }
-        }
-        return;
+      } else {
+          memVideo.onerror = null;
+          memVideo.src = '';
       }
 
-      // Camera Boot Sequence
-      video.onerror = null;
-      video.src = '';
+      // Camera boot / reuse sequence (kept alive even when MEM selected).
+      camVideo.onerror = null;
       if (streamRef.current) {
         // Reuse the existing camera pipe. Verify the tracks haven't
         // been silently stopped (some browsers end tracks after
@@ -70,8 +56,8 @@ export function useMedia(sourceType: 'camera' | 'clip', clipUrl: string | null) 
         const tracks = streamRef.current.getTracks();
         const stale = tracks.some((t) => t.readyState === 'ended');
         if (!stale) {
-          video.srcObject = streamRef.current;
-          video.play().catch(e => console.error("Play err:", e));
+          camVideo.srcObject = streamRef.current;
+          camVideo.play().catch(e => console.error("Play err:", e));
           if (active) setIsInitializing(false);
           return;
         }
@@ -90,8 +76,8 @@ export function useMedia(sourceType: 'camera' | 'clip', clipUrl: string | null) 
           return;
         }
         streamRef.current = stream;
-        video.srcObject = stream;
-        video.play().catch(e => {
+        camVideo.srcObject = stream;
+        camVideo.play().catch(e => {
           if (active) setError(e.message);
         });
         if (active) setError(null);
@@ -109,5 +95,9 @@ export function useMedia(sourceType: 'camera' | 'clip', clipUrl: string | null) 
     };
   }, [sourceType, clipUrl]);
 
-  return { videoRef, error, isInitializing };
+  useEffect(() => {
+    activeVideoRef.current = sourceType === 'clip' ? clipVideoRef.current : cameraVideoRef.current;
+  }, [sourceType]);
+
+  return { videoRef: activeVideoRef, cameraVideoRef, clipVideoRef, error, isInitializing };
 }

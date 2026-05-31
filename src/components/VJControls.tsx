@@ -31,9 +31,13 @@ interface ControlsProps {
   hasCameraError: boolean;
 }
 
-export function ControlDeck({ state, updateState, reset, hasCameraError }: ControlsProps) {
+// Memoized so the deck only re-renders when its props actually change — not
+// every time the parent App re-renders for an unrelated reason. updateState is
+// stabilized with useCallback in App so this memo bites.
+function ControlDeckImpl({ state, updateState, reset, hasCameraError }: ControlsProps) {
   const [showWeights, setShowWeights] = useState(true);
   const [showApDynamics, setShowApDynamics] = useState(false);
+  const [showExportFolder, setShowExportFolder] = useState(false);
   
   const Fader = ({ label, value, min, max, step=0.01, onChange, unit="", paramKey }: any) => {
     const percentage = ((value - min) / (max - min)) * 100;
@@ -176,6 +180,20 @@ export function ControlDeck({ state, updateState, reset, hasCameraError }: Contr
             <option value="prores">ProRes</option>
             <option value="pngseq">PNG SEQ</option>
           </select>
+          <button
+            type="button"
+            onClick={() => setShowExportFolder((v) => !v)}
+            disabled={state.recording}
+            className={`p-1 rounded border transition-colors shrink-0 disabled:opacity-50 disabled:cursor-not-allowed ${
+              showExportFolder
+                ? 'border-red-500/50 bg-red-500/10 text-red-300'
+                : 'border-zinc-700 bg-black text-zinc-400 hover:border-red-500/50 hover:text-red-300'
+            }`}
+            title="Set export subfolder"
+            aria-label="Set export subfolder"
+          >
+            <FolderOpen className="w-3.5 h-3.5" />
+          </button>
           {hasCameraError && (
             <span
               className="text-[8px] font-mono uppercase tracking-wider text-red-500 shrink-0"
@@ -223,23 +241,21 @@ export function ControlDeck({ state, updateState, reset, hasCameraError }: Contr
         </div>
       </div>
 
-      {/* EXPORT DESTINATION — the per-take subfolder under the export
-          root configured in SA3 Settings → VJ. The take records as webm,
-          then the backend ffmpeg-transcodes it to the codec chosen above
-          and writes it into <export root>/<subfolder>/. */}
-      <div className="bg-zinc-950 border-b border-zinc-800 px-2 py-1 flex items-center gap-1.5">
-        <FolderOpen className="w-3 h-3 text-zinc-500 shrink-0" />
-        <input
-          type="text"
-          value={state.exportSubfolder ?? ''}
-          onChange={(e) => updateState({ exportSubfolder: e.target.value })}
-          disabled={state.recording}
-          placeholder="export subfolder (optional)"
-          spellCheck={false}
-          className="flex-1 min-w-0 bg-black border border-zinc-800 text-[9px] font-mono text-zinc-300 px-1.5 py-1 rounded placeholder:text-zinc-700 focus:border-red-500/50 focus:outline-none disabled:opacity-50"
-          title="Subfolder under the configured export root. Leave blank to save into the root."
-        />
-      </div>
+      {showExportFolder && (
+        <div className="bg-zinc-950 border-b border-zinc-800 px-2 py-1 flex items-center gap-1.5">
+          <FolderOpen className="w-3 h-3 text-zinc-500 shrink-0" />
+          <input
+            type="text"
+            value={state.exportSubfolder ?? ''}
+            onChange={(e) => updateState({ exportSubfolder: e.target.value })}
+            disabled={state.recording}
+            placeholder="export subfolder (optional)"
+            spellCheck={false}
+            className="flex-1 min-w-0 bg-black border border-zinc-800 text-[9px] font-mono text-zinc-300 px-1.5 py-1 rounded placeholder:text-zinc-700 focus:border-red-500/50 focus:outline-none disabled:opacity-50"
+            title="Subfolder under the configured export root. Leave blank to save into the root."
+          />
+        </div>
+      )}
       
       {/* INPUT DECK — moved up above the autopilot override per UX
           spec. Houses the CAM/MEM crossfader, Canvas Format, MUTE +
@@ -891,3 +907,5 @@ export function ControlDeck({ state, updateState, reset, hasCameraError }: Contr
     </div>
   );
 }
+
+export const ControlDeck = React.memo(ControlDeckImpl);

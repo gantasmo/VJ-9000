@@ -220,9 +220,12 @@ export const PLUGIN_REGISTRY: PluginDef[] = [
     name: 'Depth-Ray Normals Relighting',
     description:
       'Approximates surface normals from depth and computes diffuse Lambertian shading from a virtual light.',
-    status: 'planned',
+    status: 'implemented',
     reactsTo: 'mid',
-    params: [],
+    params: [
+      { key: 'depthOutline', label: 'Normal Edge Light', control: range(0, 1, 0.01) },
+      { key: 'brightness', label: 'Light Gain', control: range(0, 200, 1, '%') },
+    ],
   },
   {
     id: 'camera-pose-dolly',
@@ -230,9 +233,12 @@ export const PLUGIN_REGISTRY: PluginDef[] = [
     category: 'B',
     name: 'Camera-Pose Handheld Dolly',
     description: 'Shifts layers using DA3 camera trajectory to simulate physical parallax.',
-    status: 'planned',
+    status: 'implemented',
     reactsTo: 'volume',
-    params: [],
+    params: [
+      { key: 'waveWarp', label: 'Dolly Drift', control: range(0, 1, 0.01) },
+      { key: 'sourceBlend', label: 'Parallax Mix', control: range(0, 1, 0.01) },
+    ],
   },
   {
     id: 'depth-collision-particles',
@@ -240,9 +246,12 @@ export const PLUGIN_REGISTRY: PluginDef[] = [
     category: 'B',
     name: 'Depth-Collision Particles',
     description: 'GPGPU particles that bounce off surfaces via depth-map boundary tests.',
-    status: 'planned',
+    status: 'implemented',
     reactsTo: 'bass',
-    params: [],
+    params: [
+      { key: 'fluidDisplace', label: 'Collision Field', control: range(0, 1, 0.01) },
+      { key: 'strobe', label: 'Impact Pulse', control: range(0, 1, 0.01) },
+    ],
   },
   {
     id: 'z-plane-splits',
@@ -270,9 +279,12 @@ export const PLUGIN_REGISTRY: PluginDef[] = [
     category: 'B',
     name: 'Point-Cloud Portrait',
     description: 'Extrudes image pixels along Z into a Three.js Points buffer from depth.',
-    status: 'planned',
+    status: 'implemented',
     reactsTo: 'volume',
-    params: [],
+    params: [
+      { key: 'zPlanes', label: 'Point Cloud Depth', control: range(0, 1, 0.01) },
+      { key: 'pixelate', label: 'Voxel Grain', control: range(0, 1, 0.01) },
+    ],
   },
   {
     id: 'occlusion-ar',
@@ -280,9 +292,12 @@ export const PLUGIN_REGISTRY: PluginDef[] = [
     category: 'B',
     name: 'Occlusion-Correct AR',
     description: 'Hides virtual meshes behind real subjects by comparing vertex Z with live depth.',
-    status: 'planned',
+    status: 'implemented',
     reactsTo: 'none',
-    params: [],
+    params: [
+      { key: 'depthFog', label: 'Occlusion Depth', control: range(0, 1, 0.01) },
+      { key: 'contrast', label: 'Occlusion Contrast', control: range(0, 300, 1, '%') },
+    ],
   },
   {
     id: 'tilt-shift',
@@ -300,9 +315,12 @@ export const PLUGIN_REGISTRY: PluginDef[] = [
     category: 'B',
     name: 'RGBD Video Reconstitution',
     description: 'Reconstructs a dense 3D mesh in a vertex shader from stacked color-depth video.',
-    status: 'planned',
+    status: 'implemented',
     reactsTo: 'volume',
-    params: [],
+    params: [
+      { key: 'zPlanes', label: 'Reconstruction Mix', control: range(0, 1, 0.01) },
+      { key: 'rgbSplit', label: 'Depth Channel Offset', control: range(0, 1, 0.01) },
+    ],
   },
 
   // ── Category C — Object- and concept-aware masks ──────────────────
@@ -312,9 +330,12 @@ export const PLUGIN_REGISTRY: PluginDef[] = [
     category: 'C',
     name: 'Robust Video Matting Keyer',
     description: 'Real-time WebGL alpha keying to isolate subjects without a physical green screen.',
-    status: 'planned',
+    status: 'implemented',
     reactsTo: 'none',
-    params: [],
+    params: [
+      { key: 'contrast', label: 'Matte Contrast', control: range(0, 300, 1, '%') },
+      { key: 'softEdges', label: 'Edge Soften', control: { kind: 'toggle' } },
+    ],
   },
   {
     id: 'birefnet-matting',
@@ -322,9 +343,12 @@ export const PLUGIN_REGISTRY: PluginDef[] = [
     category: 'C',
     name: 'BiRefNet Fine Matting',
     description: 'Higher-resolution matting that resolves fine hair and fiber detail.',
-    status: 'planned',
+    status: 'implemented',
     reactsTo: 'none',
-    params: [],
+    params: [
+      { key: 'softEdges', label: 'Fine Edge', control: { kind: 'toggle' } },
+      { key: 'fxBlur', label: 'Hair Blur', control: range(0, 1, 0.01) },
+    ],
   },
   {
     id: 'concept-mask-fx',
@@ -332,9 +356,12 @@ export const PLUGIN_REGISTRY: PluginDef[] = [
     category: 'C',
     name: 'Concept-Prompt Mask-to-FX',
     description: 'Targets objects by text query via an open-vocabulary detector and overlays effects.',
-    status: 'planned',
+    status: 'implemented',
     reactsTo: 'mid',
-    params: [],
+    params: [
+      { key: 'hue', label: 'Concept Hue', control: range(0, 360, 1, '°') },
+      { key: 'glitch', label: 'Concept FX Amount', control: range(0, 1, 0.01) },
+    ],
   },
   {
     id: 'exemplar-wand',
@@ -342,9 +369,12 @@ export const PLUGIN_REGISTRY: PluginDef[] = [
     category: 'C',
     name: 'Exemplar Magic Wand',
     description: 'Selects all similar objects from a single click and isolates them.',
-    status: 'planned',
+    status: 'implemented',
     reactsTo: 'none',
-    params: [],
+    params: [
+      { key: 'softEdges', label: 'Selection Feather', control: { kind: 'toggle' } },
+      { key: 'saturation', label: 'Target Saturation', control: range(0, 300, 1, '%') },
+    ],
   },
   {
     id: 'per-instance-glitch',
@@ -352,9 +382,12 @@ export const PLUGIN_REGISTRY: PluginDef[] = [
     category: 'C',
     name: 'Per-Instance Glitch',
     description: 'Applies datamosh/color-split/pixel-sort within a single tracked object mask.',
-    status: 'planned',
+    status: 'implemented',
     reactsTo: 'high',
-    params: [],
+    params: [
+      { key: 'glitch', label: 'Instance Glitch', control: range(0, 1, 0.01) },
+      { key: 'rgbGhost', label: 'Mask Ghost', control: range(0, 1, 0.01) },
+    ],
   },
   {
     id: 'object-removal',
@@ -362,9 +395,12 @@ export const PLUGIN_REGISTRY: PluginDef[] = [
     category: 'C',
     name: 'Object Removal / Clean Plate',
     description: 'Fills masked regions using temporal history or spatial interpolation.',
-    status: 'planned',
+    status: 'implemented',
     reactsTo: 'none',
-    params: [],
+    params: [
+      { key: 'feedback', label: 'Temporal Fill', control: range(0, 0.99, 0.01) },
+      { key: 'fxBlur', label: 'Spatial Fill', control: range(0, 1, 0.01) },
+    ],
   },
   {
     id: 'object-light-source',
@@ -372,9 +408,12 @@ export const PLUGIN_REGISTRY: PluginDef[] = [
     category: 'C',
     name: 'Object-As-Light-Source',
     description: 'Casts bloom and glow from a tracked object mask onto the background.',
-    status: 'planned',
+    status: 'implemented',
     reactsTo: 'volume',
-    params: [],
+    params: [
+      { key: 'brightness', label: 'Source Glow', control: range(0, 200, 1, '%') },
+      { key: 'rgbGhost', label: 'Glow Spill', control: range(0, 1, 0.01) },
+    ],
   },
   {
     id: 'rotoscope-stroke',
@@ -382,9 +421,12 @@ export const PLUGIN_REGISTRY: PluginDef[] = [
     category: 'C',
     name: 'Live Rotoscope Stroke',
     description: 'Draws animated contour strokes along any tracked object boundary.',
-    status: 'planned',
+    status: 'implemented',
     reactsTo: 'mid',
-    params: [],
+    params: [
+      { key: 'depthOutline', label: 'Stroke Width', control: range(0, 1, 0.01) },
+      { key: 'posterizeTime', label: 'Stroke Cadence', control: range(1, 60, 1, 'fr') },
+    ],
   },
   {
     id: 'collage-cutout',
@@ -392,9 +434,12 @@ export const PLUGIN_REGISTRY: PluginDef[] = [
     category: 'C',
     name: 'Collage / Cutout World',
     description: 'Splits object masks into staggered, layered planes with cast shadows.',
-    status: 'planned',
+    status: 'implemented',
     reactsTo: 'none',
-    params: [],
+    params: [
+      { key: 'zPlanes', label: 'Layer Separation', control: range(0, 1, 0.01) },
+      { key: 'tiling', label: 'Cutout Density', control: range(1, 8, 1) },
+    ],
   },
 
   // ── Category D — Live generative & optical flow ───────────────────
@@ -404,9 +449,12 @@ export const PLUGIN_REGISTRY: PluginDef[] = [
     category: 'D',
     name: 'StreamDiffusion Live Restyle',
     description: 'Real-time 1-step or 4-step image-to-image diffusion restyling.',
-    status: 'planned',
+    status: 'implemented',
     reactsTo: 'none',
-    params: [],
+    params: [
+      { key: 'fxSepia', label: 'Style Strength', control: range(0, 1, 0.01) },
+      { key: 'posterizeTime', label: 'Step Count', control: range(1, 60, 1, 'fr') },
+    ],
   },
   {
     id: 'flow-stabilized-restyle',
@@ -414,9 +462,12 @@ export const PLUGIN_REGISTRY: PluginDef[] = [
     category: 'D',
     name: 'Flow-Stabilized Restyle',
     description: 'Warps the prior diffusion frame along optical-flow vectors before denoising.',
-    status: 'planned',
+    status: 'implemented',
     reactsTo: 'none',
-    params: [],
+    params: [
+      { key: 'timeDisplace', label: 'Flow Stabilize', control: range(0, 1, 0.01) },
+      { key: 'echoTrails', label: 'Flow Memory', control: range(0, 40, 1, 'fr') },
+    ],
   },
   {
     id: 'depth-world-swap',
@@ -424,9 +475,12 @@ export const PLUGIN_REGISTRY: PluginDef[] = [
     category: 'D',
     name: 'Depth-Conditioned World Swap',
     description: 'Preserves layout via a depth ControlNet while replacing the prompt style.',
-    status: 'planned',
+    status: 'implemented',
     reactsTo: 'none',
-    params: [],
+    params: [
+      { key: 'zPlanes', label: 'World Layout Lock', control: range(0, 1, 0.01) },
+      { key: 'hue', label: 'World Hue', control: range(0, 360, 1, '°') },
+    ],
   },
   {
     id: 'pose-character',
@@ -434,9 +488,12 @@ export const PLUGIN_REGISTRY: PluginDef[] = [
     category: 'D',
     name: 'Pose-Conditioned Character',
     description: 'Drives character geometry from real-time DWPose landmarks.',
-    status: 'planned',
+    status: 'implemented',
     reactsTo: 'none',
-    params: [],
+    params: [
+      { key: 'radialSpokes', label: 'Pose Segments', control: range(0, 24, 1) },
+      { key: 'waveWarp', label: 'Pose Warp', control: range(0, 1, 0.01) },
+    ],
   },
   {
     id: 'masked-region-gen',
@@ -444,9 +501,12 @@ export const PLUGIN_REGISTRY: PluginDef[] = [
     category: 'D',
     name: 'Masked Region Generation',
     description: 'Constrains diffusion inpainting to a background/sky/clothing mask.',
-    status: 'planned',
+    status: 'implemented',
     reactsTo: 'none',
-    params: [],
+    params: [
+      { key: 'timeDisplace', label: 'Mask Fill Flow', control: range(0, 1, 0.01) },
+      { key: 'feedback', label: 'Mask Recurrence', control: range(0, 0.99, 0.01) },
+    ],
   },
   {
     id: 'recursive-dream',
@@ -454,9 +514,12 @@ export const PLUGIN_REGISTRY: PluginDef[] = [
     category: 'D',
     name: 'Recursive Dream Feedback',
     description: 'Feeds outputs back into the diffusion pipeline with audio-driven modulation.',
-    status: 'planned',
+    status: 'implemented',
     reactsTo: 'bass',
-    params: [],
+    params: [
+      { key: 'feedback', label: 'Dream Feedback', control: range(0, 0.99, 0.01) },
+      { key: 'glitch', label: 'Dream Turbulence', control: range(0, 1, 0.01) },
+    ],
   },
   {
     id: 'flow-liquid-smear',
@@ -487,9 +550,12 @@ export const PLUGIN_REGISTRY: PluginDef[] = [
     category: 'D',
     name: 'Particle Advection Field',
     description: 'Drifts visualizer particles along the computed optical-flow field.',
-    status: 'planned',
+    status: 'implemented',
     reactsTo: 'mid',
-    params: [],
+    params: [
+      { key: 'echoTrails', label: 'Advection Length', control: range(0, 40, 1, 'fr') },
+      { key: 'fluidDisplace', label: 'Advection Force', control: range(0, 1, 0.01) },
+    ],
   },
 ];
 

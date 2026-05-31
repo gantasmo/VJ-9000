@@ -10,10 +10,27 @@
  * values directly, the audio analyser continues to drive whatever
  * the visualiser already reads from state.
  */
-import React, { useState } from 'react';
-import { Music2, Plug, X, RotateCcw, Crosshair, Zap } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Music2, Plug, X, RotateCcw, Crosshair, Zap, Activity } from 'lucide-react';
 import { MIDI_PARAMS, type NumericVJField } from '../midiParams';
 import type { MidiMapping, MidiInputInfo } from '../useMidi';
+import {
+  getAudioRoutes,
+  setAudioRoute,
+  clearAudioRoutes,
+  subscribeToAudioRoutes,
+  REACTIVE_BANDS,
+  type AudioRoutes,
+  type ReactiveBand,
+} from '../audioRouting';
+
+const BAND_DOT: Record<ReactiveBand, string> = {
+  none: 'bg-zinc-700',
+  bass: 'bg-rose-400',
+  mid: 'bg-amber-400',
+  high: 'bg-cyan-400',
+  volume: 'bg-emerald-400',
+};
 
 interface MidiPanelProps {
   supported: boolean;
@@ -43,7 +60,15 @@ export const MidiPanel: React.FC<MidiPanelProps> = ({
   lastSeenCc,
 }) => {
   const [open, setOpen] = useState(false);
+  const [tab, setTab] = useState<'midi' | 'audio'>('midi');
+  // Mirror the audio-route store into local state so the panel
+  // re-renders when a band/amount changes (the store is framework-free).
+  const [routes, setRoutes] = useState<AudioRoutes>(() => getAudioRoutes());
+  useEffect(() => subscribeToAudioRoutes(setRoutes), []);
   const connectedCount = inputs.filter((i) => i.state === 'connected').length;
+  const routedCount = (Object.values(routes) as Array<AudioRoutes[NumericVJField]>).filter(
+    (r) => r && r.band !== 'none' && r.amount > 0,
+  ).length;
 
   const status: { label: string; cls: string; dot: string } = !supported
     ? { label: 'Web MIDI not supported', cls: 'border-zinc-700 text-zinc-500', dot: 'bg-zinc-700' }
@@ -84,6 +109,28 @@ export const MidiPanel: React.FC<MidiPanelProps> = ({
         </button>
       </div>
 
+      {/* Tab switcher — MIDI mapping vs. audio-reactivity routing. Both
+          target the same MIDI_PARAMS list so every effect is reachable
+          from a controller AND an audio band. */}
+      <div className="flex shrink-0 border-b border-white/5 text-[9px] uppercase tracking-widest font-mono">
+        <button
+          onClick={() => setTab('midi')}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 ${
+            tab === 'midi' ? 'text-cyan-200 bg-cyan-500/10 border-b border-cyan-400' : 'text-zinc-500 hover:text-zinc-300'
+          }`}
+        >
+          <Music2 className="w-3 h-3" /> MIDI Map
+        </button>
+        <button
+          onClick={() => setTab('audio')}
+          className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 ${
+            tab === 'audio' ? 'text-emerald-200 bg-emerald-500/10 border-b border-emerald-400' : 'text-zinc-500 hover:text-zinc-300'
+          }`}
+        >
+          <Activity className="w-3 h-3" /> Audio React {routedCount > 0 ? `· ${routedCount}` : ''}
+        </button>
+      </div>
+
       {/* Status block */}
       <div className="px-3 py-2 border-b border-white/5 shrink-0 flex flex-col gap-1">
         <div className="flex items-center gap-1.5">
@@ -116,7 +163,8 @@ export const MidiPanel: React.FC<MidiPanelProps> = ({
         )}
       </div>
 
-      {/* Mappings list */}
+      {/* Mappings list (MIDI tab) */}
+      {tab === 'midi' && (
       <div className="flex-1 min-h-0 overflow-y-auto px-2 py-2 space-y-1">
         {MIDI_PARAMS.map((param) => {
           const m = mappings[param.key];
@@ -173,16 +221,87 @@ export const MidiPanel: React.FC<MidiPanelProps> = ({
           );
         })}
       </div>
+      )}
+
+      {/* Audio reactivity routing list (AUDIO tab). Each param can be
+          driven by a band (none/bass/mid/high/volume) at an adjustable
+          0-100% depth. Applied in VideoOutput when audioReactive is on. */}
+      {tab === 'audio' && (
+        <div className="flex-1 min-h-0 overflow-y-auto px-2 py-2 space-y-1">
+          {MIDI_PARAMS.map((param) => {
+            const route = routes[param.key];
+            const band: ReactiveBand = route?.band ?? 'none';
+            const amount = route?.amount ?? 0.5;
+            const active = band !== 'none' && amount > 0;
+            return (
+              <div
+                key={param.key}
+                className={`flex flex-col gap-1 px-2 py-1.5 rounded border ${
+                  active ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-white/5 bg-white/3'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${BAND_DOT[band]}`} />
+                  <span className="text-[10px] text-zinc-200 truncate flex-1">{param.label}</span>
+                  <div className="flex gap-0.5">
+                    {REACTIVE_BANDS.map((b) => (
+                      <button
+                        key={b}
+                        onClick={() => setAudioRoute(param.key, { band: b, amount })}
+                        className={`px-1 py-0.5 rounded text-[7px] uppercase tracking-wider border ${
+                          band === b
+                            ? 'border-emerald-400/60 bg-emerald-500/15 text-emerald-200'
+                            : 'border-white/10 text-zinc-500 hover:text-zinc-200'
+                        }`}
+                        title={`Drive ${param.label} from ${b}`}
+                      >
+                        {b === 'none' ? 'off' : b}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {active && (
+                  <div className="flex items-center gap-2 pl-3.5">
+                    <span className="text-[8px] text-zinc-600 uppercase tracking-wider">depth</span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.01}
+                      value={amount}
+                      onChange={(e) => setAudioRoute(param.key, { band, amount: Number(e.target.value) })}
+                      className="flex-1 h-1 accent-emerald-500 bg-zinc-900 rounded-sm cursor-col-resize"
+                    />
+                    <span className="text-[8px] text-emerald-300 w-7 text-right">
+                      {Math.round(amount * 100)}%
+                    </span>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Footer actions */}
       <div className="flex items-center justify-between px-3 py-2 border-t border-white/5 shrink-0">
-        <button
-          onClick={resetMappings}
-          className="flex items-center gap-1.5 px-2 py-1 rounded border border-white/10 text-[9px] uppercase tracking-widest text-zinc-400 hover:text-zinc-100 hover:bg-white/5"
-          title="Restore auto-map defaults"
-        >
-          <RotateCcw className="w-3 h-3" /> Defaults
-        </button>
+        {tab === 'midi' ? (
+          <button
+            onClick={resetMappings}
+            className="flex items-center gap-1.5 px-2 py-1 rounded border border-white/10 text-[9px] uppercase tracking-widest text-zinc-400 hover:text-zinc-100 hover:bg-white/5"
+            title="Restore auto-map defaults"
+          >
+            <RotateCcw className="w-3 h-3" /> Defaults
+          </button>
+        ) : (
+          <button
+            onClick={clearAudioRoutes}
+            className="flex items-center gap-1.5 px-2 py-1 rounded border border-white/10 text-[9px] uppercase tracking-widest text-zinc-400 hover:text-zinc-100 hover:bg-white/5"
+            title="Clear every audio route"
+          >
+            <RotateCcw className="w-3 h-3" /> Clear Routes
+          </button>
+        )}
         <span className="text-[8px] text-zinc-700">audio + MIDI run side-by-side</span>
       </div>
     </div>

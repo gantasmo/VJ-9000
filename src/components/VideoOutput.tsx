@@ -120,11 +120,13 @@ async function uploadTake(
 interface VideoOutputProps {
   vjState: VJState;
   videoRef: React.RefObject<HTMLVideoElement>;
+  cameraVideoRef?: React.RefObject<HTMLVideoElement>;
+  clipVideoRef?: React.RefObject<HTMLVideoElement>;
   getAudioLevels: () => AudioLevels;
   onAutopilotSwitchClip?: () => void;
 }
 
-export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwitchClip }: VideoOutputProps) {
+export function VideoOutput({ vjState, videoRef, cameraVideoRef, clipVideoRef, getAudioLevels, onAutopilotSwitchClip }: VideoOutputProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const recordCanvasRef = useRef<HTMLCanvasElement>(null);
   
@@ -168,8 +170,14 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwit
       const aspect = liveCanvas && liveCanvas.height > 0
         ? liveCanvas.width / liveCanvas.height
         : 16 / 9;
-      recordCanvasRef.current.width = Math.round(targetH * aspect);
-      recordCanvasRef.current.height = targetH;
+      // Force EVEN width/height. h264/h265 (yuv420p) and prores (422) all
+      // reject odd dimensions — the encoder won't even open ("width not
+      // divisible by 2"), which surfaced as a 500 on /api/vj/export. Deriving
+      // width from the aspect routinely lands odd (e.g. 720p*305/144 = 1525),
+      // so round each axis down to the nearest even pixel here at the source.
+      const evenDown = (n: number) => Math.max(2, Math.floor(n / 2) * 2);
+      recordCanvasRef.current.width = evenDown(targetH * aspect);
+      recordCanvasRef.current.height = evenDown(targetH);
       const stream = recordCanvasRef.current.captureStream(30);
       
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
@@ -177,19 +185,23 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwit
       const dest = audioCtx.createMediaStreamDestination();
       let hasAudio = false;
 
-      // 1. Try Video Audio (if clip audio is on, or if camera has audio)
-      const videoEl = videoRef.current;
-      if (videoEl && !videoEl.muted) {
+      // 1. Try source audio (prefer MEM clip when clip audio is enabled,
+      // otherwise prefer camera feed). Keep `videoRef` as a fallback for
+      // older wiring.
+      const preferredVideoEl = vjState.clipAudio
+        ? (clipVideoRef?.current ?? videoRef.current)
+        : (cameraVideoRef?.current ?? videoRef.current);
+      if (preferredVideoEl) {
           try {
-              if (videoEl.srcObject && videoEl.srcObject instanceof MediaStream) {
-                  const tracks = (videoEl.srcObject as MediaStream).getAudioTracks();
+              if (preferredVideoEl.srcObject && preferredVideoEl.srcObject instanceof MediaStream) {
+                  const tracks = (preferredVideoEl.srcObject as MediaStream).getAudioTracks();
                   if (tracks.length > 0) {
-                      const source = audioCtx.createMediaStreamSource(videoEl.srcObject as MediaStream);
+                      const source = audioCtx.createMediaStreamSource(preferredVideoEl.srcObject as MediaStream);
                       source.connect(dest);
                       hasAudio = true;
                   }
               } else {
-                 const anyVid = videoEl as any;
+                 const anyVid = preferredVideoEl as any;
                  const capturedStream = anyVid.captureStream ? anyVid.captureStream() : anyVid.mozCaptureStream ? anyVid.mozCaptureStream() : null;
                  if (capturedStream && capturedStream.getAudioTracks().length > 0) {
                      const source = audioCtx.createMediaStreamSource(capturedStream);
@@ -275,8 +287,7 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwit
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    const video = videoRef.current;
-    if (!canvas || !video) return;
+    if (!canvas) return;
     
     const ctx = canvas.getContext('2d', { alpha: false }); 
     if (!ctx) return;
@@ -291,6 +302,8 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwit
     // For Slit scan / Time displacement / Echo trails
     const slitCanvas = document.createElement('canvas');
     const slitCtx = slitCanvas.getContext('2d', { alpha: true });
+    const blendCanvas = document.createElement('canvas');
+    const blendCtx = blendCanvas.getContext('2d', { alpha: false });
 
     // ── Category A scratch buffers (Reaction-Diffusion, SDF Portal,
     // Topographic, Fluid Displacement). Each effect computes on a small
@@ -398,13 +411,50 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwit
     };
 
     
-    // Frame buffer for backskip and time displacement
+    // Frame buffer for backskip and time displacement. The 60 canvas OBJECTS
+    // are created up front (cheap — a canvas with no backing store costs almost
+    // nothing), but a slot only gets a full-resolution backing store when it's
+    // actually drawn into. Crucially we only CYCLE through the whole ring while
+    // a time-history effect is active; otherwise we reuse a single slot, so the
+    // other 59 never get sized up to full res — a big VRAM saving on low-VRAM
+    // GPUs (the 6 GB-laptop case). See the sampling block below.
     const bufferSize = 60;
     const frameBuffer: HTMLCanvasElement[] = [];
     for(let i=0; i<bufferSize; i++) {
         frameBuffer.push(document.createElement('canvas'));
     }
     let frameIndex = 0;
+
+    // SVG filter primitives — looked up once and cached, not re-queried (×6
+    // document.getElementById) every frame. Last-set attribute strings are
+    // cached too so we only call setAttribute (which forces an SVG filter
+    // recompile) when a value actually changes.
+    let svgWarpDisp: Element | null = null;
+    let svgWarpTurb: Element | null = null;
+    let svgRgbRed: Element | null = null;
+    let svgRgbBlue: Element | null = null;
+    let lastWarpScale = '';
+    let lastWarpFreq = '';
+    let lastRgbDx = '';
+    let lastRgbDy = '';
+
+    // Container size tracked via ResizeObserver instead of reading
+    // clientWidth/clientHeight every frame (which forces a layout reflow each
+    // tick). Seeded once synchronously so the first frame has real dimensions.
+    let containerW = canvas.parentElement?.clientWidth ?? 0;
+    let containerH = canvas.parentElement?.clientHeight ?? 0;
+    let resizeObs: ResizeObserver | null = null;
+    if (canvas.parentElement && typeof ResizeObserver !== 'undefined') {
+      resizeObs = new ResizeObserver((entries) => {
+        const cr = entries[0]?.contentRect;
+        if (cr) { containerW = cr.width; containerH = cr.height; }
+      });
+      resizeObs.observe(canvas.parentElement);
+    }
+
+    // RD luminance re-seed is throttled to every Nth frame (the canvas→buffer
+    // blit + readback is expensive); the pattern still tracks content closely.
+    let rdReseedTick = 0;
 
     let animationId: number;
     
@@ -443,7 +493,12 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwit
       // standalone, so this is a no-op outside SA3.
       if (!getVisibility()) return;
 
-      if (!video.videoWidth || video.readyState < 2) return;
+      const camVideo = cameraVideoRef?.current ?? null;
+      const memVideo = clipVideoRef?.current ?? null;
+      const legacyVideo = videoRef.current ?? null;
+      const hasCam = !!camVideo && camVideo.readyState >= 2 && camVideo.videoWidth > 0;
+      const hasMem = !!memVideo && memVideo.readyState >= 2 && memVideo.videoWidth > 0;
+      if (!hasCam && !hasMem) return;
 
       // SOLO mode neutralises every other effect when a plugin is soloed
       // so the operator can dial one effect's mapping in isolation; a
@@ -455,10 +510,9 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwit
       // while the CSS box (w-full h-full) stays the same size, so the
       // browser upscales a cheaper render on weaker GPUs.
       const perfScale = s.performanceMode === 'low' ? 0.5 : s.performanceMode === 'medium' ? 0.75 : 1.0;
-      const container = canvas.parentElement;
-      if (container) {
-        const targetW = Math.max(2, Math.round(container.clientWidth * perfScale));
-        const targetH = Math.max(2, Math.round(container.clientHeight * perfScale));
+      if (containerW > 0 && containerH > 0) {
+        const targetW = Math.max(2, Math.round(containerW * perfScale));
+        const targetH = Math.max(2, Math.round(containerH * perfScale));
         if (canvas.width !== targetW || canvas.height !== targetH) {
           canvas.width = targetW;
           canvas.height = targetH;
@@ -855,14 +909,18 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwit
       }
 
       // --- TIMECODE & FRAME BUFFER ---
+      const playbackVideo = s.sourceType === 'clip'
+        ? (memVideo ?? legacyVideo ?? camVideo)
+        : (camVideo ?? legacyVideo ?? memVideo);
+
       currentPlaybackSpeed = Math.max(0.1, Math.min(10.0, currentPlaybackSpeed));
-      if (video.playbackRate !== currentPlaybackSpeed) {
-          video.playbackRate = currentPlaybackSpeed;
+      if (playbackVideo && playbackVideo.playbackRate !== currentPlaybackSpeed) {
+          playbackVideo.playbackRate = currentPlaybackSpeed;
       }
       
-      if (currentReversePlayback && currentPlaybackSpeed > 0 && timestamp - fallbackVideoUpdate > 20) {
+      if (playbackVideo && currentReversePlayback && currentPlaybackSpeed > 0 && timestamp - fallbackVideoUpdate > 20) {
           try {
-             video.currentTime = Math.max(0, video.currentTime - ((timestamp - fallbackVideoUpdate)/1000) * currentPlaybackSpeed * 2);
+             playbackVideo.currentTime = Math.max(0, playbackVideo.currentTime - ((timestamp - fallbackVideoUpdate)/1000) * currentPlaybackSpeed * 2);
           } catch(e){}
           fallbackVideoUpdate = timestamp;
       } else if (!currentReversePlayback) {
@@ -879,26 +937,69 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwit
           }
       }
 
-      if (shouldSampleFrame) {
-         const fCtx = frameBuffer[frameIndex].getContext('2d', { alpha: false });
-         if (frameBuffer[frameIndex].width !== video.videoWidth || frameBuffer[frameIndex].height !== video.videoHeight) {
-            frameBuffer[frameIndex].width = video.videoWidth;
-            frameBuffer[frameIndex].height = video.videoHeight;
-         }
-         if (fCtx) fCtx.drawImage(video, 0, 0, video.videoWidth, video.videoHeight);
-         frameIndex = (frameIndex + 1) % bufferSize;
+      const blend = Math.max(0, Math.min(1, s.sourceBlend ?? (s.sourceType === 'clip' ? 1 : 0)));
+      const fallbackVideo = memVideo ?? camVideo ?? legacyVideo;
+      if (!fallbackVideo) return;
+      let inputSource: CanvasImageSource = fallbackVideo;
+      let inputW = fallbackVideo.videoWidth;
+      let inputH = fallbackVideo.videoHeight;
+      if (hasCam && hasMem && blendCtx && camVideo && memVideo) {
+        const targetW = memVideo.videoWidth || camVideo.videoWidth;
+        const targetH = memVideo.videoHeight || camVideo.videoHeight;
+        if (blendCanvas.width !== targetW || blendCanvas.height !== targetH) {
+          blendCanvas.width = targetW;
+          blendCanvas.height = targetH;
+        }
+        blendCtx.globalCompositeOperation = 'source-over';
+        blendCtx.globalAlpha = 1;
+        blendCtx.fillStyle = 'black';
+        blendCtx.fillRect(0, 0, targetW, targetH);
+        blendCtx.globalAlpha = 1 - blend;
+        blendCtx.drawImage(camVideo, 0, 0, targetW, targetH);
+        blendCtx.globalAlpha = blend;
+        blendCtx.drawImage(memVideo, 0, 0, targetW, targetH);
+        blendCtx.globalAlpha = 1;
+        inputSource = blendCanvas;
+        inputW = targetW;
+        inputH = targetH;
+      } else if (hasMem && memVideo && blend >= 0.5) {
+        inputSource = memVideo;
+        inputW = memVideo.videoWidth;
+        inputH = memVideo.videoHeight;
+      } else if (hasCam && camVideo) {
+        inputSource = camVideo;
+        inputW = camVideo.videoWidth;
+        inputH = camVideo.videoHeight;
       }
-      
+
+      // Only cycle the full ring when an effect actually reads frame history;
+      // otherwise reuse slot 0 so the other 59 canvases never allocate a
+      // full-resolution backing store. (headIndex resolves to 0 either way.)
+      const needsHistory =
+        currentBackskip > 0 || currentSlitScan > 0 || currentEchoTrails > 0 || currentTimeDisplace > 0;
+      if (shouldSampleFrame) {
+         const writeIndex = needsHistory ? frameIndex : 0;
+         const fc = frameBuffer[writeIndex];
+         const fCtx = fc.getContext('2d', { alpha: false });
+         if (fc.width !== inputW || fc.height !== inputH) {
+            fc.width = inputW;
+            fc.height = inputH;
+         }
+         if (fCtx) fCtx.drawImage(inputSource, 0, 0, inputW, inputH);
+         // history → advance the ring; no-history → park so headIndex === 0
+         frameIndex = needsHistory ? (frameIndex + 1) % bufferSize : 1;
+      }
+
       const headIndex = (frameIndex - 1 + bufferSize) % bufferSize;
 
-      let sourceVideo: CanvasImageSource = shouldSampleFrame ? video : frameBuffer[headIndex] || video;
-      let vidW = video.videoWidth;
-      let vidH = video.videoHeight;
+      let sourceVideo: CanvasImageSource = shouldSampleFrame ? inputSource : frameBuffer[headIndex] || inputSource;
+      let vidW = inputW;
+      let vidH = inputH;
       
       if (currentBackskip > 0) {
          let backFrames = Math.floor(currentBackskip * (bufferSize - 1));
          let targetIndex = (headIndex - backFrames + bufferSize) % bufferSize;
-         sourceVideo = frameBuffer[targetIndex] || video;
+         sourceVideo = frameBuffer[targetIndex] || fallbackVideo;
       }
       
       // Time-domain Composite Pass (Slit-scan, Echo, Displace)
@@ -914,7 +1015,7 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwit
                 slitCtx.drawImage(sourceVideo, 0, 0, vidW, vidH);
                 for (let i = 1; i <= echoCount; i++) {
                     const tIndex = (headIndex - i + bufferSize) % bufferSize;
-                    const srcFrame = frameBuffer[tIndex] || video;
+                    const srcFrame = frameBuffer[tIndex] || fallbackVideo;
                     slitCtx.drawImage(srcFrame, 0, 0, vidW, vidH);
                 }
                 slitCtx.globalAlpha = 1.0;
@@ -927,7 +1028,7 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwit
                 slitCtx.globalAlpha = 1.0;
                 for (let i = 0; i < slitDepth; i++) {
                     const tIndex = (headIndex - i + bufferSize) % bufferSize;
-                    const srcFrame = frameBuffer[tIndex] || video;
+                    const srcFrame = frameBuffer[tIndex] || fallbackVideo;
                     const sy = i * rowHeight;
                     if (sy < vidH) {
                         slitCtx.drawImage(srcFrame, 0, sy, vidW, rowHeight, 0, sy, vidW, rowHeight);
@@ -948,7 +1049,7 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwit
                     const displaceAmount = Math.sin(i * 0.5 + Date.now()/1000) * 0.5 + 0.5; // 0 to 1
                     const tOffset = Math.floor(displaceAmount * currentTimeDisplace * (bufferSize - 1));
                     const tIndex = (headIndex - tOffset + bufferSize) % bufferSize;
-                    const srcFrame = frameBuffer[tIndex] || video;
+                    const srcFrame = frameBuffer[tIndex] || fallbackVideo;
                     const sy = i * rowHeight;
                     if (sy < vidH) {
                         slitCtx.drawImage(srcFrame, 0, sy, vidW, rowHeight, 0, sy, vidW, rowHeight);
@@ -1138,9 +1239,11 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwit
           }
           rdSeeded = true;
         }
-        // Re-inject B from the current frame's bright areas so the
-        // pattern tracks the video content.
-        if (flowSampleCtx) {
+        // Re-inject B from the current frame's bright areas so the pattern
+        // tracks the video content. Throttled to every 3rd frame — the
+        // canvas→small-buffer blit + readback is the expensive part and the
+        // pattern evolves slowly enough that 20 Hz reseeding is invisible.
+        if (flowSampleCtx && (rdReseedTick++ % 3 === 0)) {
           flowSampleCtx.drawImage(canvas, 0, 0, FLOW_W, FLOW_H);
         }
         const dA = 1.0;
@@ -1525,24 +1628,30 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwit
       if (currentEdge) customFilters += ' url(#fvj-edge)';
       if (currentWave > 0) {
          customFilters += ' url(#fvj-warp)';
-         const disp = document.getElementById('fvj-warp-disp');
-         const turb = document.getElementById('fvj-warp-turb');
-         if (disp && turb) {
-             disp.setAttribute('scale', (currentWave * 150).toString());
-             turb.setAttribute('baseFrequency', (0.01 + currentWave * 0.04).toString());
+         if (!svgWarpDisp) svgWarpDisp = document.getElementById('fvj-warp-disp');
+         if (!svgWarpTurb) svgWarpTurb = document.getElementById('fvj-warp-turb');
+         if (svgWarpDisp && svgWarpTurb) {
+             const scale = (currentWave * 150).toString();
+             const freq = (0.01 + currentWave * 0.04).toString();
+             if (scale !== lastWarpScale) { svgWarpDisp.setAttribute('scale', scale); lastWarpScale = scale; }
+             if (freq !== lastWarpFreq) { svgWarpTurb.setAttribute('baseFrequency', freq); lastWarpFreq = freq; }
          }
       }
       if (currentSplit > 0 || currentChromaAb > 0) {
          customFilters += ' url(#fvj-rgb)';
-         const r = document.getElementById('fvj-rgb-red');
-         const b = document.getElementById('fvj-rgb-blue');
-         if (r && b) {
-             const dx = (currentSplit * 100) + (currentChromaAb * 20);
-             const dy = currentChromaAb * 15;
-             r.setAttribute('dx', dx.toString());
-             r.setAttribute('dy', dy.toString());
-             b.setAttribute('dx', (-dx).toString());
-             b.setAttribute('dy', (-dy).toString());
+         if (!svgRgbRed) svgRgbRed = document.getElementById('fvj-rgb-red');
+         if (!svgRgbBlue) svgRgbBlue = document.getElementById('fvj-rgb-blue');
+         if (svgRgbRed && svgRgbBlue) {
+             const dx = ((currentSplit * 100) + (currentChromaAb * 20)).toString();
+             const dy = (currentChromaAb * 15).toString();
+             if (dx !== lastRgbDx || dy !== lastRgbDy) {
+                 svgRgbRed.setAttribute('dx', dx);
+                 svgRgbRed.setAttribute('dy', dy);
+                 svgRgbBlue.setAttribute('dx', (-Number(dx)).toString());
+                 svgRgbBlue.setAttribute('dy', (-Number(dy)).toString());
+                 lastRgbDx = dx;
+                 lastRgbDy = dy;
+             }
          }
       }
 
@@ -1610,8 +1719,11 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwit
     };
 
     renderLoop(performance.now());
-    return () => cancelAnimationFrame(animationId);
-  }, []); 
+    return () => {
+      cancelAnimationFrame(animationId);
+      resizeObs?.disconnect();
+    };
+  }, []);
 
   return (
     <div className="w-full h-full bg-black flex items-center justify-center overflow-hidden">
@@ -1649,7 +1761,40 @@ export function VideoOutput({ vjState, videoRef, getAudioLevels, onAutopilotSwit
           </filter>
         </defs>
       </svg>
-      <video ref={videoRef} autoPlay playsInline muted={vjState.sourceType === 'camera' || !vjState.clipAudio} loop className="hidden" crossOrigin="anonymous" />
+      {cameraVideoRef ? (
+        <video
+          ref={cameraVideoRef}
+          autoPlay
+          playsInline
+          muted
+          className="hidden"
+          crossOrigin="anonymous"
+        />
+      ) : null}
+
+      {clipVideoRef ? (
+        <video
+          ref={clipVideoRef}
+          autoPlay
+          playsInline
+          muted={!vjState.clipAudio}
+          loop
+          className="hidden"
+          crossOrigin="anonymous"
+        />
+      ) : null}
+
+      {!cameraVideoRef && !clipVideoRef ? (
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted={vjState.sourceType === 'camera' || !vjState.clipAudio}
+          loop
+          className="hidden"
+          crossOrigin="anonymous"
+        />
+      ) : null}
       
       {/* Primary Rendering Target */}
       <canvas ref={canvasRef} className="w-full h-full block" />

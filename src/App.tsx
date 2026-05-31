@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { VJState, VideoClip, DEFAULT_VJ_STATE } from './types';
 import { useMedia } from './useMedia';
 import { useAudioAnalyzer } from './useAudioAnalyzer';
@@ -7,10 +7,23 @@ import { VideoOutput } from './components/VideoOutput';
 import { ControlDeck } from './components/VJControls';
 import { MidiPanel } from './components/MidiPanel';
 import { routeFiles, VJ_FILE_ACCEPT } from './fileRouter';
-// sa3Bridge has a module-level postMessage listener; importing for
-// side effect so it starts listening as soon as the app mounts.
-import './sa3Bridge';
-import { AlertTriangle, Film, Upload, X as XIcon } from 'lucide-react';
+import {
+  subscribeToLoadSet,
+  subscribeToLoadTrack,
+  subscribeToMidi,
+  subscribeToControlSet,
+  subscribeToControlRequests,
+  sendControlManifest,
+  sendControlChanged,
+  ExternalLoadItem,
+} from './sa3Bridge';
+import {
+  CONTROL_MANIFEST,
+  snapshotControlValues,
+  coerceControlValue,
+  readControlValue,
+} from './controlManifest';
+import { AlertTriangle, Film, Upload, X as XIcon, ChevronRight, ChevronLeft } from 'lucide-react';
 
 const LOCAL_STORAGE_KEY = 'gantasmo_veejay_state_2';
 
@@ -60,8 +73,19 @@ export default function App() {
   const [routerError, setRouterError] = useState<string | null>(null);
   const [lastSeenCc, setLastSeenCc] = useState<{ cc: number; value: number; channel: number } | null>(null);
   const pendingSa3PlayRef = useRef<Window | null>(null);
+  const clipResumeMapRef = useRef<Record<string, number>>({});
+  // Right-hand control deck collapse (standard layout only). Lets the user
+  // reclaim the full width for the visualizer without leaving standard mode.
+  const [controlsCollapsed, setControlsCollapsed] = useState(false);
+  // ── Control-sync echo guard ──────────────────────────────────────
+  // When the SA3 host writes a control into VJState we must NOT echo that same
+  // change back to the host (it would fight the host's own fader). We stamp the
+  // keys the host just set; the diff-emitter skips them for one tick. We also
+  // keep the last-emitted snapshot so we only post controls that actually moved.
+  const hostWroteRef = useRef<Set<string>>(new Set());
+  const lastSentRef = useRef<Record<string, number | boolean>>({});
 
-  const { videoRef, error, isInitializing } = useMedia(vjState.sourceType, vjState.clipUrl);
+  const { videoRef, cameraVideoRef, clipVideoRef, error, isInitializing } = useMedia(vjState.sourceType, vjState.clipUrl);
   const { getAudioLevels } = useAudioAnalyzer(vjState.audioReactive);
 
   // SA3 → VJ playback commands. The PlayerFooter in SA3 sends
@@ -144,8 +168,76 @@ export default function App() {
     return () => video.removeEventListener('loadeddata', playAfterSrcSettles);
   }, [videoRef, vjState.clipUrl]);
 
-  const updateState = (updates: Partial<VJState>) => {
+  // Stable identity so the memoized ControlDeck doesn't re-render on unrelated
+  // App updates. setVjState is itself stable, so no deps are needed.
+  const updateState = useCallback((updates: Partial<VJState>) => {
     setVjState((prev) => ({ ...prev, ...updates }));
+  }, []);
+
+  // ── Control sync: SA3 SLIDE tab ⇄ VJ controls ────────────────────
+  // (1) Host → VJ: apply inbound control-set writes (range/toggle), marking
+  //     each key so the diff-emitter below doesn't echo it back.
+  // (2) Host handshake: answer request-controls with the manifest + a live
+  //     snapshot so the SLIDE tab can build matching lanes at current values.
+  useEffect(() => {
+    const unsubSet = subscribeToControlSet(({ key, value }) => {
+      const coerced = coerceControlValue(key, value);
+      if (coerced === null) return;
+      hostWroteRef.current.add(key);
+      lastSentRef.current[key] = coerced; // host value is now the known state
+      setVjState((prev) => ({ ...prev, [key]: coerced }) as VJState);
+    });
+    const unsubReq = subscribeToControlRequests(() => {
+      setVjState((prev) => {
+        const values = snapshotControlValues(prev);
+        lastSentRef.current = { ...values };
+        sendControlManifest(CONTROL_MANIFEST, values);
+        return prev; // read-only snapshot
+      });
+    });
+    return () => { unsubSet(); unsubReq(); };
+  }, []);
+
+  // (3) VJ → Host: whenever VJState changes, emit control-changed for any
+  //     manifest control whose value differs from what we last sent — EXCEPT
+  //     keys the host just wrote (those are skipped once, then cleared).
+  useEffect(() => {
+    const skip = hostWroteRef.current;
+    for (const entry of CONTROL_MANIFEST) {
+      const current = readControlValue(vjState, entry.key);
+      if (skip.has(entry.key)) {
+        lastSentRef.current[entry.key] = current;
+        continue;
+      }
+      if (lastSentRef.current[entry.key] !== current) {
+        lastSentRef.current[entry.key] = current;
+        sendControlChanged(entry.key, current);
+      }
+    }
+    hostWroteRef.current = new Set();
+  }, [vjState]);
+
+  const normalizeIncomingClip = (item: ExternalLoadItem): VideoClip | null => {
+    const rawUrl = typeof item.url === 'string' ? item.url.trim() : '';
+    if (!rawUrl) return null;
+    const rawKind = typeof item.kind === 'string' ? item.kind.toLowerCase() : '';
+    if (rawKind === 'image') return null;
+    const kind: VideoClip['kind'] = rawKind === 'audio' ? 'audio' : 'video';
+    const label =
+      (typeof item.label === 'string' && item.label.trim()) ||
+      (typeof item.name === 'string' && item.name.trim()) ||
+      (typeof item.title === 'string' && item.title.trim()) ||
+      'Imported clip';
+    const key =
+      (typeof item.entryId === 'string' && item.entryId) ||
+      (typeof item.id === 'string' && item.id) ||
+      rawUrl;
+    return {
+      id: `sa3-${key}`,
+      name: label.length > 25 ? `${label.slice(0, 21)}...` : label,
+      url: rawUrl,
+      kind,
+    };
   };
 
   // Web MIDI integration. Mapped CCs / notes patch VJState directly;
@@ -191,6 +283,122 @@ export default function App() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [vjState.layoutMode]);
+
+  // SA3 host -> sidecar set/track ingestion. Incoming set entries are
+  // appended to the same archive bucket used by local imports, and we
+  // activate the most recently loaded clip so DJ->VJ handoff is immediate.
+  useEffect(() => {
+    const ingest = (items: ExternalLoadItem[]) => {
+      const incoming = items.map(normalizeIncomingClip).filter((c): c is VideoClip => c !== null);
+      if (incoming.length === 0) return;
+      setVjState((prev) => {
+        const dedup = new Map(prev.videoBucket.map((clip) => [clip.id, clip]));
+        for (const clip of incoming) dedup.set(clip.id, clip);
+        const merged = Array.from(dedup.values());
+        const activate = incoming[incoming.length - 1];
+        return {
+          ...prev,
+          videoBucket: merged,
+          activeClipId: activate.id,
+          clipUrl: activate.url,
+          clipLabel: activate.name,
+          clipKind: activate.kind ?? 'video',
+          sourceType: 'clip',
+          sourceBlend: 1,
+        };
+      });
+    };
+
+    const unsubSet = subscribeToLoadSet((payload) => ingest(payload.items ?? []));
+    const unsubTrack = subscribeToLoadTrack((payload) => ingest(payload.item ? [payload.item] : []));
+    return () => {
+      unsubSet();
+      unsubTrack();
+    };
+  }, []);
+
+  // Preserve playback position per clip, so switching clips and returning
+  // resumes from last position instead of restarting from 0 every time.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const onTimeUpdate = () => {
+      const id = vjState.activeClipId;
+      if (!id || !Number.isFinite(video.currentTime)) return;
+      clipResumeMapRef.current[id] = video.currentTime;
+    };
+    video.addEventListener('timeupdate', onTimeUpdate);
+    return () => {
+      video.removeEventListener('timeupdate', onTimeUpdate);
+    };
+  }, [videoRef, vjState.activeClipId]);
+
+  useEffect(() => {
+    const id = vjState.activeClipId;
+    if (!id || !vjState.clipUrl) return;
+    const resumeAt = clipResumeMapRef.current[id];
+    if (typeof resumeAt !== 'number' || resumeAt <= 0) return;
+    const video = videoRef.current;
+    if (!video) return;
+    const restore = () => {
+      try {
+        const maxStart = Number.isFinite(video.duration) && video.duration > 0
+          ? Math.max(0, video.duration - 0.05)
+          : Number.POSITIVE_INFINITY;
+        video.currentTime = Math.min(resumeAt, maxStart);
+      } catch {
+        /* some streams reject random seek; ignore */
+      }
+    };
+    if (video.readyState >= 1) restore();
+    else video.addEventListener('loadedmetadata', restore, { once: true });
+    return () => video.removeEventListener('loadedmetadata', restore);
+  }, [videoRef, vjState.activeClipId, vjState.clipUrl]);
+
+  // Host MIDI shortcuts for live set control:
+  // - CC1 (mod wheel) maps to CAM↔MEM crossfader
+  // - Note C3 (48) selects previous clip
+  // - Note D3 (50) selects next clip
+  useEffect(() => {
+    const moveActive = (dir: -1 | 1) => {
+      setVjState((prev) => {
+        if (prev.videoBucket.length === 0) return prev;
+        const currentIdx = prev.videoBucket.findIndex((c) => c.id === prev.activeClipId);
+        const startIdx = currentIdx >= 0 ? currentIdx : 0;
+        const nextIdx = (startIdx + dir + prev.videoBucket.length) % prev.videoBucket.length;
+        const chosen = prev.videoBucket[nextIdx];
+        return {
+          ...prev,
+          activeClipId: chosen.id,
+          clipUrl: chosen.url,
+          clipLabel: chosen.name,
+          clipKind: chosen.kind ?? 'video',
+          sourceType: 'clip',
+          sourceBlend: 1,
+        };
+      });
+    };
+
+    const unsub = subscribeToMidi((msg) => {
+      const [status, data1, data2] = msg.data;
+      const command = status & 0xf0;
+      if (command === 0xb0) {
+        // CC 1 = crossfader
+        if (data1 === 1) {
+          const blend = Math.max(0, Math.min(1, (Number(data2) || 0) / 127));
+          setVjState((prev) => ({
+            ...prev,
+            sourceBlend: blend,
+            sourceType: blend < 0.5 ? 'camera' : 'clip',
+          }));
+        }
+      } else if (command === 0x90 && data2 > 0) {
+        if (data1 === 48) moveActive(-1);
+        if (data1 === 50) moveActive(1);
+      }
+    });
+    return unsub;
+  }, []);
 
   useEffect(() => {
     if (vjState.layoutMode === 'fullscreen') {
@@ -344,6 +552,8 @@ export default function App() {
         <VideoOutput
            vjState={vjState}
            videoRef={videoRef as any}
+           cameraVideoRef={cameraVideoRef as any}
+           clipVideoRef={clipVideoRef as any}
            getAudioLevels={getAudioLevels}
            onAutopilotSwitchClip={handleAutopilotSwitchClip}
         />
