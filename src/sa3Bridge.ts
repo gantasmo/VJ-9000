@@ -82,6 +82,10 @@ const midiListeners = new Set<(msg: ExternalMidiMessage) => void>();
 const visibilityListeners = new Set<(visible: boolean) => void>();
 const loadSetListeners = new Set<(payload: ExternalLoadSetPayload) => void>();
 const loadTrackListeners = new Set<(payload: ExternalLoadTrackPayload) => void>();
+// Host (SA3 VJ toolbar) flips the camera source on/off. We turn this into a
+// sourceType switch in App.tsx and echo the resulting state back so the host
+// button reflects reality (incl. a getUserMedia failure).
+const cameraListeners = new Set<(on: boolean) => void>();
 
 // ── Control sync (SLIDE tab ⇄ VJ controls) ─────────────────────────
 /** A single control change pushed FROM the host: set this VJState key to
@@ -186,8 +190,31 @@ if (typeof window !== 'undefined') {
       requestControlsListeners.forEach((cb) => {
         try { cb(); } catch { /* defensive */ }
       });
+    } else if (data.type === 'sa3-vj/camera') {
+      const on = Boolean(data.on);
+      cameraListeners.forEach((cb) => {
+        try { cb(on); } catch { /* defensive */ }
+      });
     }
   });
+}
+
+/** Subscribe to host camera on/off requests. Returns an unsubscribe fn. */
+export function subscribeToCamera(cb: (on: boolean) => void): () => void {
+  cameraListeners.add(cb);
+  return () => { cameraListeners.delete(cb); };
+}
+
+/** Tell the host the real camera state after applying it (so its toggle button
+ *  reflects on/off and surfaces a getUserMedia error). */
+export function sendCameraState(on: boolean, error?: string | null): void {
+  postToHost({ type: 'sa3-vj/camera-state', on, error: error ?? null });
+}
+
+/** Acknowledge to the host that an incoming SET landed (N items appended to the
+ *  archive bucket) so SA3 can show a confirmed "set is here" indicator. */
+export function sendSetLoaded(count: number, name?: string | null): void {
+  postToHost({ type: 'sa3-vj/set-loaded', count, name: name ?? null });
 }
 
 /** Subscribe to inbound control writes from the host. */

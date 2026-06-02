@@ -13,8 +13,11 @@ import {
   subscribeToMidi,
   subscribeToControlSet,
   subscribeToControlRequests,
+  subscribeToCamera,
   sendControlManifest,
   sendControlChanged,
+  sendCameraState,
+  sendSetLoaded,
   ExternalLoadItem,
 } from './sa3Bridge';
 import {
@@ -198,6 +201,26 @@ export default function App() {
     return () => { unsubSet(); unsubReq(); };
   }, []);
 
+  // SA3 VJ toolbar → camera on/off. Flip the source between the live camera and
+  // the clip/memory buffer (the CAM↔MEM crossfader's two ends).
+  useEffect(() => {
+    const unsub = subscribeToCamera((on) => {
+      setVjState((prev) => ({
+        ...prev,
+        sourceType: on ? 'camera' : 'clip',
+        sourceBlend: on ? 0 : 1,
+      }));
+    });
+    return unsub;
+  }, []);
+
+  // Echo the live camera state whenever the source (or its getUserMedia error)
+  // changes, so the SA3 toolbar button stays honest even when the source is
+  // switched from inside the VJ app (its own controls / the MIDI crossfader).
+  useEffect(() => {
+    sendCameraState(vjState.sourceType === 'camera', error);
+  }, [vjState.sourceType, error]);
+
   // (3) VJ → Host: whenever VJState changes, emit control-changed for any
   //     manifest control whose value differs from what we last sent — EXCEPT
   //     keys the host just wrote (those are skipped once, then cleared).
@@ -288,9 +311,9 @@ export default function App() {
   // appended to the same archive bucket used by local imports, and we
   // activate the most recently loaded clip so DJ->VJ handoff is immediate.
   useEffect(() => {
-    const ingest = (items: ExternalLoadItem[]) => {
+    const ingest = (items: ExternalLoadItem[]): number => {
       const incoming = items.map(normalizeIncomingClip).filter((c): c is VideoClip => c !== null);
-      if (incoming.length === 0) return;
+      if (incoming.length === 0) return 0;
       setVjState((prev) => {
         const dedup = new Map(prev.videoBucket.map((clip) => [clip.id, clip]));
         for (const clip of incoming) dedup.set(clip.id, clip);
@@ -307,10 +330,15 @@ export default function App() {
           sourceBlend: 1,
         };
       });
+      return incoming.length;
     };
 
-    const unsubSet = subscribeToLoadSet((payload) => ingest(payload.items ?? []));
-    const unsubTrack = subscribeToLoadTrack((payload) => ingest(payload.item ? [payload.item] : []));
+    const unsubSet = subscribeToLoadSet((payload) => {
+      sendSetLoaded(ingest(payload.items ?? []), payload.name ?? null);
+    });
+    const unsubTrack = subscribeToLoadTrack((payload) => {
+      sendSetLoaded(ingest(payload.item ? [payload.item] : []), payload.name ?? null);
+    });
     return () => {
       unsubSet();
       unsubTrack();
