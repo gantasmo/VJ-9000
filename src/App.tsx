@@ -7,6 +7,7 @@ import { VideoOutput } from './components/VideoOutput';
 import { ControlDeck } from './components/VJControls';
 import { MidiPanel } from './components/MidiPanel';
 import { routeFiles, VJ_FILE_ACCEPT } from './fileRouter';
+import { uploadMediaToLibrary } from './libraryUpload';
 import {
   subscribeToLoadSet,
   subscribeToLoadTrack,
@@ -507,7 +508,7 @@ export default function App() {
     const files = Array.from(filesList);
     if (files.length === 0) return;
 
-    const { newClips, imagePatch, autoReactive, errors } = routeFiles(files);
+    const { newClips, imagePatch, autoReactive, errors, clipFiles, imageFile } = routeFiles(files);
 
     if (errors.length > 0) {
       const first = errors[0];
@@ -538,6 +539,67 @@ export default function App() {
       }
       return next;
     });
+
+    // Persist video clips + an image backdrop to the library so the cue
+    // survives a reload. The blob URLs above are instant preview; once an
+    // upload lands we swap in the stable /api/library/media/<id> URL and
+    // revoke the blob. Audio clips stay session-only (not library media).
+    void persistImports(clipFiles, imageFile);
+  };
+
+  /** Upload originals to the library and swap blob URLs for stable ones.
+   *  Best-effort: a failed upload keeps the session blob (works until
+   *  reload) so a backend hiccup never loses the clip mid-set. */
+  const persistImports = async (
+    clipFiles: Array<{ clipId: string; file: File }>,
+    imageFile: File | null,
+  ) => {
+    for (const { clipId, file } of clipFiles) {
+      try {
+        const up = await uploadMediaToLibrary(file);
+        let staleBlob: string | null = null;
+        setVjState((prev) => {
+          const existing = prev.videoBucket.find((c) => c.id === clipId);
+          if (!existing) return prev; // removed before the upload finished
+          if (existing.url.startsWith('blob:')) staleBlob = existing.url;
+          const videoBucket = prev.videoBucket.map((c) =>
+            c.id === clipId ? { ...c, url: up.mediaUrl } : c,
+          );
+          const patch: Partial<VJState> =
+            prev.activeClipId === clipId ? { clipUrl: up.mediaUrl } : {};
+          return { ...prev, videoBucket, ...patch };
+        });
+        // Revoke after the swap settles so the active <video> has already
+        // re-pointed at the stable URL (avoids a decode-error flash).
+        if (staleBlob) {
+          const dead = staleBlob;
+          window.setTimeout(() => {
+            try { URL.revokeObjectURL(dead); } catch { /* already gone */ }
+          }, 2000);
+        }
+      } catch (e) {
+        console.warn('VJ: library persist failed; keeping session clip:', e);
+      }
+    }
+
+    if (imageFile) {
+      try {
+        const up = await uploadMediaToLibrary(imageFile);
+        let staleBlob: string | null = null;
+        setVjState((prev) => {
+          if (prev.imageUrl && prev.imageUrl.startsWith('blob:')) staleBlob = prev.imageUrl;
+          return { ...prev, imageUrl: up.mediaUrl };
+        });
+        if (staleBlob) {
+          const dead = staleBlob;
+          window.setTimeout(() => {
+            try { URL.revokeObjectURL(dead); } catch { /* already gone */ }
+          }, 2000);
+        }
+      } catch (e) {
+        console.warn('VJ: image persist failed; keeping session backdrop:', e);
+      }
+    }
   };
 
   return (

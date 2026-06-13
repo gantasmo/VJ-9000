@@ -97,6 +97,14 @@ export interface RouteFilesResult {
   autoReactive: boolean;
   /** Per-file rejections so the caller can show an error. */
   errors: Array<{ mime: string; name: string }>;
+  /** Video clip id → source File, so the caller can upload the original
+   *  to the library and swap the blob URL for a reload-stable one. Audio
+   *  clips are intentionally excluded (the library stores media, not the
+   *  transient reactivity source). */
+  clipFiles: Array<{ clipId: string; file: File }>;
+  /** The source File that produced imagePatch (for the same persistence
+   *  pass), or null. */
+  imageFile: File | null;
 }
 
 /** Multi-file router. Splits files by kind and returns the new bucket
@@ -107,7 +115,9 @@ export interface RouteFilesResult {
 export function routeFiles(files: File[]): RouteFilesResult {
   const errors: Array<{ mime: string; name: string }> = [];
   const newClips: VideoClip[] = [];
+  const clipFiles: Array<{ clipId: string; file: File }> = [];
   let imagePatch: Partial<VJState> | null = null;
+  let imageFile: File | null = null;
   let autoReactive = false;
 
   for (const file of files) {
@@ -118,11 +128,13 @@ export function routeFiles(files: File[]): RouteFilesResult {
     }
     if (route.kind === 'image') {
       imagePatch = route.patch;
+      imageFile = file;
       continue;
     }
     newClips.push(route.clip);
+    if (route.kind === 'video') clipFiles.push({ clipId: route.clip.id, file });
     if (route.kind === 'audio') autoReactive = true;
   }
 
-  return { newClips, imagePatch, autoReactive, errors };
+  return { newClips, imagePatch, autoReactive, errors, clipFiles, imageFile };
 }
