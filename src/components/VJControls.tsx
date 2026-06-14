@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { VJState, DEFAULT_VJ_STATE } from '../types';
-import { Activity, RefreshCcw, Upload, Sliders, Cpu, Radio, Hash, Video, LayoutPanelLeft, Columns, Monitor, Maximize, FolderOpen } from 'lucide-react';
+import { Activity, RefreshCcw, Upload, Sliders, Cpu, Radio, Hash, Video, LayoutPanelLeft, Columns, Monitor, Maximize, FolderOpen, Tv2 } from 'lucide-react';
 import { PluginsPanel } from './PluginsPanel';
+import { backendBase } from '../libraryUpload';
 
 const AUTOPILOT_EFFECTS = [
   { key: 'feedback', label: 'Feedback Wash' },
@@ -29,15 +30,142 @@ interface ControlsProps {
   updateState: (updates: Partial<VJState>) => void;
   reset: () => void;
   hasCameraError: boolean;
+  /** Direct QuestCast feed status (from useQuestCast in App). */
+  questState?: 'idle' | 'starting' | 'connecting' | 'waiting-video' | 'live' | 'error';
+  questError?: string | null;
+  questFps?: number;
+  questLog?: string[];
 }
+
+/** Scrollable QuestCast diagnostics log — the whole pipeline (frontend +
+ *  relay + scrcpy + adb) in one place. Auto-scrolls; Copy dumps it to the
+ *  clipboard so the full trace can be shared. */
+const QuestLogPanel: React.FC<{ log: string[] }> = ({ log }) => {
+  const boxRef = useRef<HTMLDivElement>(null);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    const el = boxRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [log.length]);
+  const copy = () => {
+    const text = log.join('\n');
+    const done = () => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    };
+    // Fallback for when the Clipboard API is blocked by the iframe's
+    // permissions policy: a temporary textarea + execCommand('copy').
+    const legacyCopy = () => {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        done();
+      } catch { /* give up silently */ }
+    };
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(legacyCopy);
+    } else {
+      legacyCopy();
+    }
+  };
+  return (
+    <div className="rounded border border-zinc-800 bg-black/60">
+      <div className="flex items-center justify-between px-1.5 py-0.5 border-b border-zinc-900">
+        <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">Quest log ({log.length})</span>
+        <button
+          type="button"
+          onClick={copy}
+          disabled={log.length === 0}
+          className="text-[8px] font-mono uppercase tracking-widest text-sky-300 hover:text-sky-200 disabled:opacity-40"
+        >
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+      <div ref={boxRef} className="max-h-40 overflow-y-auto custom-scrollbar px-1.5 py-1 space-y-0.5">
+        {log.length === 0 ? (
+          <p className="text-[8px] font-mono text-zinc-600">No events yet — select QUEST to start.</p>
+        ) : (
+          log.map((line, i) => (
+            <p
+              key={i}
+              className={`text-[8px] font-mono leading-tight break-all ${
+                /ERROR|ABORT|fail/i.test(line)
+                  ? 'text-rose-300'
+                  : /✓|FIRST FRAME|ready|live/i.test(line)
+                  ? 'text-emerald-300/90'
+                  : 'text-zinc-400'
+              }`}
+            >
+              {line}
+            </p>
+          ))
+        )}
+      </div>
+    </div>
+  );
+};
 
 // Memoized so the deck only re-renders when its props actually change — not
 // every time the parent App re-renders for an unrelated reason. updateState is
 // stabilized with useCallback in App so this memo bites.
-function ControlDeckImpl({ state, updateState, reset, hasCameraError }: ControlsProps) {
+function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState = 'idle', questError = null, questFps = 0, questLog = [] }: ControlsProps) {
   const [showWeights, setShowWeights] = useState(true);
   const [showApDynamics, setShowApDynamics] = useState(false);
   const [showExportFolder, setShowExportFolder] = useState(false);
+  // Current backend export root (where takes are written) + native-picker busy
+  // state. The folder is chosen via the OS dialog, never typed.
+  const [exportFolder, setExportFolder] = useState<string | null>(null);
+  const [pickingFolder, setPickingFolder] = useState(false);
+  const [folderError, setFolderError] = useState<string | null>(null);
+
+  // Fetch the current export folder when the panel opens.
+  useEffect(() => {
+    if (!showExportFolder) return;
+    let cancelled = false;
+    fetch(`${backendBase()}/api/vj/export-folder`)
+      .then((r) => r.json())
+      .then((d) => { if (!cancelled && d?.path) setExportFolder(String(d.path)); })
+      .catch(() => { /* backend solo-run / unreachable — leave unset */ });
+    return () => { cancelled = true; };
+  }, [showExportFolder]);
+
+  const pickExportFolder = async () => {
+    setPickingFolder(true);
+    setFolderError(null);
+    try {
+      const res = await fetch(`${backendBase()}/api/vj/export-folder/pick`, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || `Backend returned ${res.status}`);
+      if (data?.path) setExportFolder(String(data.path));
+    } catch (e) {
+      setFolderError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPickingFolder(false);
+    }
+  };
+
+  // Available video capture devices for the CAM device picker. Labels only
+  // populate after a camera permission grant, so the list fills in once CAM
+  // has been used at least once. Re-enumerates on hot-plug.
+  const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
+  useEffect(() => {
+    const md = navigator.mediaDevices;
+    if (!md?.enumerateDevices) return;
+    const refresh = () => {
+      md.enumerateDevices()
+        .then((ds) => setVideoDevices(ds.filter((d) => d.kind === 'videoinput')))
+        .catch(() => { /* ignore — picker just stays default-only */ });
+    };
+    refresh();
+    md.addEventListener?.('devicechange', refresh);
+    return () => md.removeEventListener?.('devicechange', refresh);
+  }, []);
   
   const Fader = ({ label, value, min, max, step=0.01, onChange, unit="", paramKey }: any) => {
     const percentage = ((value - min) / (max - min)) * 100;
@@ -156,6 +284,9 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError }: Controls
           {/* Resolution — locked mid-take so a switch can't tear the
               captureStream output. */}
           <select
+            id="vj-record-quality"
+            name="vj-record-quality"
+            aria-label="Recording resolution"
             value={state.recordQuality ?? '1080p'}
             onChange={(e) => updateState({ recordQuality: e.target.value as '720p' | '1080p' | '4K' })}
             disabled={state.recording}
@@ -169,6 +300,9 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError }: Controls
           {/* Delivery codec — the backend ffmpeg-transcodes the webm take
               into this on stop. */}
           <select
+            id="vj-record-codec"
+            name="vj-record-codec"
+            aria-label="Export codec"
             value={state.recordCodec ?? 'h264'}
             onChange={(e) => updateState({ recordCodec: e.target.value as VJState['recordCodec'] })}
             disabled={state.recording}
@@ -242,18 +376,45 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError }: Controls
       </div>
 
       {showExportFolder && (
-        <div className="bg-zinc-950 border-b border-zinc-800 px-2 py-1 flex items-center gap-1.5">
-          <FolderOpen className="w-3 h-3 text-zinc-500 shrink-0" />
-          <input
-            type="text"
-            value={state.exportSubfolder ?? ''}
-            onChange={(e) => updateState({ exportSubfolder: e.target.value })}
-            disabled={state.recording}
-            placeholder="export subfolder (optional)"
-            spellCheck={false}
-            className="flex-1 min-w-0 bg-black border border-zinc-800 text-[9px] font-mono text-zinc-300 px-1.5 py-1 rounded placeholder:text-zinc-700 focus:border-red-500/50 focus:outline-none disabled:opacity-50"
-            title="Subfolder under the configured export root. Leave blank to save into the root."
-          />
+        <div className="bg-zinc-950 border-b border-zinc-800 px-2 py-1.5 space-y-1.5">
+          {/* Output folder: chosen via the native OS picker, never typed. */}
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => void pickExportFolder()}
+              disabled={state.recording || pickingFolder}
+              className="flex items-center gap-1.5 px-2 py-1 rounded border border-red-500/40 bg-red-500/10 hover:bg-red-500/20 text-red-200 text-[9px] font-black uppercase tracking-widest disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+              title="Open the OS folder picker to choose where recorded takes are saved."
+            >
+              <FolderOpen className="w-3 h-3" />
+              {pickingFolder ? 'Choose…' : 'Choose output folder'}
+            </button>
+            <span
+              className="flex-1 min-w-0 truncate text-[9px] font-mono text-zinc-400"
+              title={exportFolder ?? 'Loading current export folder…'}
+            >
+              {exportFolder ?? '—'}
+            </span>
+          </div>
+          {folderError && (
+            <p className="text-[8px] font-mono text-rose-300/80 leading-snug">{folderError}</p>
+          )}
+          {/* Optional subfolder under the chosen output folder. */}
+          <div className="flex items-center gap-1.5">
+            <label htmlFor="vj-export-subfolder" className="text-[8px] font-mono uppercase tracking-widest text-zinc-600 shrink-0">Subfolder</label>
+            <input
+              id="vj-export-subfolder"
+              name="vj-export-subfolder"
+              type="text"
+              value={state.exportSubfolder ?? ''}
+              onChange={(e) => updateState({ exportSubfolder: e.target.value })}
+              disabled={state.recording}
+              placeholder="optional"
+              spellCheck={false}
+              className="flex-1 min-w-0 bg-black border border-zinc-800 text-[9px] font-mono text-zinc-300 px-1.5 py-1 rounded placeholder:text-zinc-700 focus:border-red-500/50 focus:outline-none disabled:opacity-50"
+              title="Optional subfolder created under the chosen output folder. Leave blank to save into the folder itself."
+            />
+          </div>
         </div>
       )}
       
@@ -305,6 +466,153 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError }: Controls
           </div>
         </div>
 
+        {/* CAM sub-source: a real capture device, or a screen/window grabbed
+            via getDisplayMedia. SCREEN is how a scrcpy-mirrored Quest (or any
+            window / capture card) gets piped in without OBS. The SCREEN click
+            is the user gesture getDisplayMedia requires. */}
+        {state.sourceType === 'camera' && (
+          <div className="space-y-1.5">
+            <div className="grid grid-cols-2 gap-2">
+              <TogglePad
+                label="DEVICE"
+                active={(state.cameraSource ?? 'device') === 'device'}
+                onClick={() => updateState({ sourceType: 'camera', sourceBlend: 0, cameraSource: 'device' })}
+                highlight="purple"
+              />
+              <TogglePad
+                label="SCREEN"
+                active={state.cameraSource === 'screen'}
+                onClick={() => updateState({
+                  sourceType: 'camera',
+                  sourceBlend: 0,
+                  cameraSource: 'screen',
+                  cameraReinit: (state.cameraReinit ?? 0) + 1,
+                })}
+                highlight="purple"
+              />
+              <TogglePad
+                label="QUEST"
+                active={state.cameraSource === 'quest'}
+                onClick={() => updateState({
+                  sourceType: 'camera',
+                  sourceBlend: 0,
+                  cameraSource: 'quest',
+                  cameraReinit: (state.cameraReinit ?? 0) + 1,
+                })}
+                highlight="purple"
+              />
+              <TogglePad
+                label="CYMATICS"
+                active={state.cameraSource === 'cymatics'}
+                onClick={() => updateState({
+                  sourceType: 'camera',
+                  sourceBlend: 0,
+                  cameraSource: 'cymatics',
+                  cameraReinit: (state.cameraReinit ?? 0) + 1,
+                })}
+                highlight="purple"
+              />
+            </div>
+            {(state.cameraSource ?? 'device') === 'device' && (
+              <div className="flex flex-col gap-1">
+                <label htmlFor="vj-cam-device" className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">
+                  Camera device
+                </label>
+                <select
+                  id="vj-cam-device"
+                  name="vj-cam-device"
+                  value={state.cameraDeviceId ?? ''}
+                  onChange={(e) => updateState({ cameraDeviceId: e.target.value || null, cameraReinit: (state.cameraReinit ?? 0) + 1 })}
+                  className="bg-black/40 border border-zinc-800 rounded px-2 py-1 text-[10px] font-mono text-zinc-200 focus:border-purple-500/50 outline-none"
+                >
+                  <option value="">Default camera</option>
+                  {videoDevices.map((d, i) => (
+                    <option key={d.deviceId || i} value={d.deviceId}>
+                      {d.label || `Camera ${i + 1}`}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {state.cameraSource === 'screen' && (
+              <button
+                type="button"
+                onClick={() => updateState({
+                  sourceType: 'camera',
+                  sourceBlend: 0,
+                  cameraSource: 'screen',
+                  cameraReinit: (state.cameraReinit ?? 0) + 1,
+                })}
+                className="w-full flex items-center justify-center gap-2 px-2 py-1.5 rounded border border-purple-500/40 bg-purple-500/10 hover:bg-purple-500/20 text-purple-200 text-[10px] font-mono uppercase tracking-widest"
+              >
+                <Monitor className="w-3 h-3" /> Pick window / screen…
+              </button>
+            )}
+            {state.cameraSource === 'quest' && (
+              <div
+                className={`flex items-center justify-between gap-2 px-2 py-1.5 rounded border text-[9px] font-mono uppercase tracking-widest ${
+                  questState === 'live'
+                    ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
+                    : questState === 'error'
+                    ? 'border-rose-500/40 bg-rose-500/10 text-rose-200'
+                    : 'border-sky-500/40 bg-sky-500/10 text-sky-200'
+                }`}
+                title={questError ?? 'Direct Quest feed over ADB/scrcpy — no window picker, no OBS.'}
+              >
+                <span className="flex items-center gap-1.5 min-w-0">
+                  <Tv2 className="w-3 h-3 shrink-0" />
+                  <span className="truncate">
+                    {questState === 'live'
+                      ? `Quest live · ${questFps}fps`
+                      : questState === 'error'
+                      ? 'Quest feed error'
+                      : questState === 'idle'
+                      ? 'Quest starting…'
+                      : `Quest ${questState}…`}
+                  </span>
+                </span>
+              </div>
+            )}
+            {state.cameraSource !== 'cymatics' && (
+              <p className="text-[8px] font-mono text-zinc-600 leading-snug">
+                {state.cameraSource === 'quest'
+                  ? 'QUEST decodes the headset directly over ADB — connect by USB (with USB debugging enabled) or wireless ADB. No window picker, no OBS.'
+                  : 'SCREEN captures a window or display (e.g. a scrcpy-mirrored Quest). No OBS needed.'}
+              </p>
+            )}
+            {state.cameraSource === 'quest' && questError && (
+              <p className="text-[8px] font-mono text-rose-300/80 leading-snug">{questError}</p>
+            )}
+            {state.cameraSource === 'quest' && (
+              <div className="space-y-1">
+                <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">Quest view</span>
+                <div className="grid grid-cols-3 gap-1">
+                  <TogglePad label="FULL SBS" active={(state.questView ?? 'full') === 'full'} onClick={() => updateState({ questView: 'full' })} highlight="purple" />
+                  <TogglePad label="L 16:9" active={state.questView === 'left'} onClick={() => updateState({ questView: 'left' })} highlight="purple" />
+                  <TogglePad label="R 16:9" active={state.questView === 'right'} onClick={() => updateState({ questView: 'right' })} highlight="purple" />
+                </div>
+              </div>
+            )}
+            {state.cameraSource === 'quest' && (
+              <QuestLogPanel log={questLog} />
+            )}
+            {state.cameraSource === 'cymatics' && (
+              <div className="space-y-1.5">
+                <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">Cymatics mode</span>
+                <div className="grid grid-cols-2 gap-1">
+                  <TogglePad label="ORB" active={(state.cymaticsMode ?? 'orb') === 'orb'} onClick={() => updateState({ cymaticsMode: 'orb' })} highlight="purple" />
+                  <TogglePad label="PLATE" active={state.cymaticsMode === 'cymatics'} onClick={() => updateState({ cymaticsMode: 'cymatics' })} highlight="purple" />
+                  <TogglePad label="CHROME" active={state.cymaticsMode === 'landscape-chrome'} onClick={() => updateState({ cymaticsMode: 'landscape-chrome' })} highlight="purple" />
+                  <TogglePad label="FERRO" active={state.cymaticsMode === 'landscape-ferrofluid'} onClick={() => updateState({ cymaticsMode: 'landscape-ferrofluid' })} highlight="purple" />
+                </div>
+                <p className="text-[8px] font-mono text-zinc-600 leading-snug">
+                  Reflective black-chrome visual, audio-reactive. Mix it against a clip with the CAM↔MEM crossfader; all DECK effects apply.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Canvas Format */}
         <div className="flex flex-col gap-1.5">
           <span className="text-[10px] text-zinc-500 uppercase tracking-widest font-mono">Canvas Format</span>
@@ -340,6 +648,9 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError }: Controls
               SELECT &amp; IMPORT VIDEO CLIPS
             </button>
             <input
+              id="vj-import-clips"
+              name="vj-import-clips"
+              aria-label="Select and import video, audio, or image clips"
               type="file"
               accept="video/*,audio/*,image/*"
               multiple

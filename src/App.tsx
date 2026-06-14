@@ -1,9 +1,15 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { VJState, VideoClip, DEFAULT_VJ_STATE } from './types';
 import { useMedia } from './useMedia';
+import { useQuestCast } from './useQuestCast';
+import { useCymatics } from './useCymatics';
 import { useAudioAnalyzer } from './useAudioAnalyzer';
+import { backendBase } from './libraryUpload';
 import { useMidi } from './useMidi';
 import { VideoOutput } from './components/VideoOutput';
+import { ClipGrid } from './components/ClipGrid';
+import { Waveform } from './components/Waveform';
+import { SourcePreview } from './components/SourcePreview';
 import { ControlDeck } from './components/VJControls';
 import { MidiPanel } from './components/MidiPanel';
 import { routeFiles, VJ_FILE_ACCEPT } from './fileRouter';
@@ -27,7 +33,7 @@ import {
   coerceControlValue,
   readControlValue,
 } from './controlManifest';
-import { AlertTriangle, Film, Upload, X as XIcon, ChevronRight, ChevronLeft } from 'lucide-react';
+import { AlertTriangle, Film, Upload, X as XIcon, ChevronRight, ChevronLeft, PanelRightOpen, PanelRightClose } from 'lucide-react';
 
 const LOCAL_STORAGE_KEY = 'gantasmo_veejay_state_2';
 
@@ -89,8 +95,32 @@ export default function App() {
   const hostWroteRef = useRef<Set<string>>(new Set());
   const lastSentRef = useRef<Record<string, number | boolean>>({});
 
-  const { videoRef, cameraVideoRef, clipVideoRef, error, isInitializing } = useMedia(vjState.sourceType, vjState.clipUrl);
   const { getAudioLevels } = useAudioAnalyzer(vjState.audioReactive);
+
+  // Direct Quest source (ADB/scrcpy relay decoded in-app via WebCodecs). Only
+  // boots while the user has the QUEST sub-source selected.
+  const questFeed = useQuestCast(
+    vjState.sourceType === 'camera' && vjState.cameraSource === 'quest',
+    vjState.questView ?? 'full',
+  );
+
+  // Cymatics generative source — theDAW's reflective black-chrome visual,
+  // audio-reactive, mixable through the CAM↔MEM crossfader + all effects.
+  const cymaticsFeed = useCymatics(
+    vjState.sourceType === 'camera' && vjState.cameraSource === 'cymatics',
+    vjState.cymaticsMode ?? 'orb',
+    getAudioLevels,
+  );
+
+  const { videoRef, cameraVideoRef, clipVideoRef, error, isInitializing } = useMedia(
+    vjState.sourceType,
+    vjState.clipUrl,
+    vjState.cameraSource ?? 'device',
+    vjState.cameraDeviceId,
+    vjState.cameraReinit ?? 0,
+    questFeed.stream,
+    cymaticsFeed.stream,
+  );
 
   // SA3 → VJ playback commands. The PlayerFooter in SA3 sends
   // { type: 'sa3-vj/playback', action: 'play' | 'pause' } when the
@@ -176,6 +206,34 @@ export default function App() {
   // App updates. setVjState is itself stable, so no deps are needed.
   const updateState = useCallback((updates: Partial<VJState>) => {
     setVjState((prev) => ({ ...prev, ...updates }));
+  }, []);
+
+  // Auto-default the live source to QUEST when an ADB device (Quest) is
+  // connected at load. Checked once on mount; only overrides the plain
+  // 'device' camera default — a deliberate screen/cymatics choice or a clip is
+  // left alone.
+  const questAutoChecked = useRef(false);
+  useEffect(() => {
+    if (questAutoChecked.current) return;
+    questAutoChecked.current = true;
+    (async () => {
+      try {
+        const res = await fetch(`${backendBase()}/api/questcast/devices`);
+        const body = await res.json();
+        const hasDevice =
+          Array.isArray(body?.devices) &&
+          body.devices.some((d: { state?: string }) => (d?.state ?? 'device') === 'device');
+        if (!hasDevice) return;
+        setVjState((prev) => {
+          if (prev.sourceType === 'camera' && (prev.cameraSource ?? 'device') === 'device') {
+            return { ...prev, cameraSource: 'quest', sourceBlend: 0, cameraReinit: (prev.cameraReinit ?? 0) + 1 };
+          }
+          return prev;
+        });
+      } catch {
+        /* backend unreachable — leave the source as-is */
+      }
+    })();
   }, []);
 
   // ── Control sync: SA3 SLIDE tab ⇄ VJ controls ────────────────────
@@ -604,7 +662,7 @@ export default function App() {
 
   return (
     <div
-      className="w-full h-screen flex bg-black text-white overflow-hidden font-sans"
+      className="w-full h-screen flex flex-col bg-black text-white overflow-hidden font-sans"
       onDragOver={(e) => {
         e.preventDefault();
         e.dataTransfer.dropEffect = 'copy';
@@ -614,6 +672,27 @@ export default function App() {
         handleFiles(e.dataTransfer.files);
       }}
     >
+
+      {/* Full-width audio scope pinned at the very top of the standard layout,
+          above the video banks. */}
+      {vjState.layoutMode === 'standard' && (
+        <div className="shrink-0 h-9 w-full border-b border-zinc-800 bg-[#07070b]">
+          <Waveform getAudioLevels={getAudioLevels} />
+        </div>
+      )}
+
+      {/* Body row: left column (video banks + output canvas) + right control
+          rail (aside), which spans this row top-to-bottom. */}
+      <div className="flex flex-1 min-h-0 w-full">
+
+      {/* Left column: Resolume-style clip grid above the output monitor. In
+          standard mode this is a vertical column; in other modes it becomes
+          `display:contents` so <main> stays a direct flex child of the body row
+          and its split/preview/fullscreen widths keep working. */}
+      <div className={vjState.layoutMode === 'standard' ? 'flex flex-col flex-1 min-w-0 min-h-0' : 'contents'}>
+      {vjState.layoutMode === 'standard' && (
+        <ClipGrid state={vjState} updateState={updateState} onFiles={handleFiles} />
+      )}
 
       {/* Master Visualizer Component */}
       <main
@@ -761,25 +840,71 @@ export default function App() {
            </button>
         )}
       </main>
+      </div>{/* end left column */}
 
-      {/* Controller Bus */}
+      {/* Collapsed right panel: a thin rail with an expand handle (standard mode). */}
+      {vjState.layoutMode === 'standard' && vjState.rightPanelCollapsed && (
+        <aside className="relative z-40 w-8 shrink-0 border-l border-cyan-900/40 bg-[#111] flex flex-col items-center pt-2">
+          <button
+            type="button"
+            onClick={() => updateState({ rightPanelCollapsed: false })}
+            className="p-1 rounded text-cyan-300 hover:text-white hover:bg-cyan-900/40"
+            title="Expand control panel"
+            aria-label="Expand control panel"
+            aria-expanded={false}
+          >
+            <PanelRightOpen className="w-4 h-4" />
+          </button>
+          <span className="mt-2 text-[8px] font-mono uppercase tracking-widest text-zinc-600 [writing-mode:vertical-rl]">Controls</span>
+        </aside>
+      )}
+
+      {/* Controller Bus — full-height right panel. */}
       <aside
          className={`
            ${vjState.layoutMode === 'fullscreen' ? 'translate-x-full absolute right-0 opacity-0 pointer-events-none' : 'relative'}
            ${vjState.layoutMode === 'split' ? 'w-1/2 flex-none' : ''}
            ${vjState.layoutMode === 'preview' ? 'flex-1' : ''}
-           ${vjState.layoutMode === 'standard' ? 'w-96 flex-none' : ''}
+           ${vjState.layoutMode === 'standard' ? (vjState.rightPanelCollapsed ? 'hidden' : 'w-96 flex-none') : ''}
            z-40 shadow-[-10px_0_30px_rgba(0,0,0,0.8)] border-l border-cyan-900/40 transition-all duration-500 bg-[#111] overflow-hidden
          `}
       >
+        {vjState.layoutMode === 'standard' && (
+          <div className="flex items-center justify-between px-2 py-1 border-b border-zinc-800">
+            <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-500">Controls</span>
+            <button
+              type="button"
+              onClick={() => updateState({ rightPanelCollapsed: true })}
+              className="p-1 rounded text-zinc-500 hover:text-white hover:bg-zinc-800"
+              title="Collapse control panel"
+              aria-label="Collapse control panel"
+              aria-expanded
+            >
+              <PanelRightClose className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+        {/* Live source monitor — reuses the already-decoded Quest/Cymatics
+            stream (no second decode). */}
+        {vjState.layoutMode === 'standard' && vjState.sourceType === 'camera' && vjState.cameraSource === 'quest' && questFeed.stream && (
+          <SourcePreview stream={questFeed.stream} label="Quest" />
+        )}
+        {vjState.layoutMode === 'standard' && vjState.sourceType === 'camera' && vjState.cameraSource === 'cymatics' && cymaticsFeed.stream && (
+          <SourcePreview stream={cymaticsFeed.stream} label="Cymatics" />
+        )}
         <ControlDeck
           state={vjState}
           updateState={updateState}
           reset={resetState}
           hasCameraError={!!error && vjState.sourceType === 'camera'}
+          questState={questFeed.state}
+          questError={questFeed.error}
+          questFps={questFeed.fps}
+          questLog={questFeed.log}
         />
       </aside>
 
+      </div>
     </div>
   );
 }
