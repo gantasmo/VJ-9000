@@ -22,6 +22,22 @@ export interface VJState {
    *  renderer still works at the extremes. True dual-source
    *  compositing across mid-values is a VideoOutput follow-up. */
   sourceBlend?: number;
+  /** Live-camera sub-source: a real capture device, a screen/window grabbed
+   *  via getDisplayMedia, 'quest' — the direct theDAW QuestCast ADB/scrcpy
+   *  relay decoded in-app with WebCodecs, or 'cymatics' — theDAW's reflective
+   *  black-chrome cymatics visual rendered as a generative source. 'screen'
+   *  remains as the fallback window-capture path. */
+  cameraSource?: 'device' | 'screen' | 'quest' | 'cymatics';
+  /** Active Cymatics mode when cameraSource==='cymatics'. */
+  cymaticsMode?: 'orb' | 'cymatics' | 'landscape-chrome' | 'landscape-ferrofluid';
+  /** Quest stereo-mirror crop: full SBS frame, or one eye cropped to 16:9. */
+  questView?: 'full' | 'left' | 'right';
+  /** Selected videoinput deviceId when cameraSource==='device' (the camera
+   *  device picker). Null = browser default / facingMode. */
+  cameraDeviceId?: string | null;
+  /** Bump to force the live source to re-request (e.g. re-pick a screen/window
+   *  or re-open a device) even when the other fields are unchanged. */
+  cameraReinit?: number;
   clipUrl: string | null;
   /** Display label for the currently-loaded clip (file name). */
   clipLabel?: string | null;
@@ -197,6 +213,16 @@ export interface VJState {
    *  when standalone / visible. The renderer reads the live bridge value
    *  directly; this field mirrors it for any UI that wants to show it. */
   isTabVisible: boolean;
+  /** Resolume-style clip grid dimensions (square cells). Both can be grown.
+   *  Defaults to 10 columns × 2 rows = a 20-cell bank. */
+  gridCols?: number;
+  gridRows?: number;
+  /** Active clip-grid bank (page) index. Banks page through videoBucket in
+   *  gridCols×gridRows chunks. */
+  gridBank?: number;
+  /** Collapse/minimize state for the standard layout panels. */
+  banksCollapsed?: boolean;
+  rightPanelCollapsed?: boolean;
 }
 
 
@@ -204,6 +230,11 @@ export const DEFAULT_VJ_STATE: VJState = {
   layoutMode: 'standard',
   sourceType: 'camera',
   sourceBlend: 0,
+  cameraSource: 'device',
+  cymaticsMode: 'orb',
+  questView: 'full',
+  cameraDeviceId: null,
+  cameraReinit: 0,
   clipUrl: null,
   clipLabel: null,
   clipKind: null,
@@ -215,6 +246,9 @@ export const DEFAULT_VJ_STATE: VJState = {
   autoSwitchClips: true,
   autoSwitchInterval: 8,
   clipAudio: false,
+  gridCols: 10,
+  gridRows: 2,
+  gridBank: 0,
 
   hue: 0,
   saturation: 100,
