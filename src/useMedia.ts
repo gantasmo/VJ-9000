@@ -1,5 +1,29 @@
 import { useState, useEffect, useRef } from 'react';
 
+/**
+ * Turn a getUserMedia DOMException into a plain-language instruction the user
+ * can act on, instead of surfacing the raw "Permission denied" / "Requested
+ * device not found" text. Keyed on the spec error names, which are stable
+ * across browsers (the human-readable .message is not).
+ */
+function describeCameraError(err: unknown): string {
+  const name = (err as { name?: string })?.name ?? '';
+  switch (name) {
+    case 'NotAllowedError':
+    case 'SecurityError':
+      return 'Give the browser access to your camera in the site permissions, then try again.';
+    case 'NotFoundError':
+    case 'OverconstrainedError':
+      return 'No camera found — plug one in (or pick a different device) and try again.';
+    case 'NotReadableError':
+      return 'The camera is in use by another app — close it and try again.';
+    default: {
+      const msg = (err as { message?: string })?.message;
+      return msg ? `Camera unavailable: ${msg}` : 'Could not access a camera.';
+    }
+  }
+}
+
 export function useMedia(sourceType: 'camera' | 'clip', clipUrl: string | null) {
   const cameraVideoRef = useRef<HTMLVideoElement>(null);
   const clipVideoRef = useRef<HTMLVideoElement>(null);
@@ -82,7 +106,7 @@ export function useMedia(sourceType: 'camera' | 'clip', clipUrl: string | null) 
         });
         if (active) setError(null);
       } catch (err: any) {
-        if (active) setError(err.message || 'Failed to acquire optical hardware.');
+        if (active) setError(describeCameraError(err));
       } finally {
         if (active) setIsInitializing(false);
       }
