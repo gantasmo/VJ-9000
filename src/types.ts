@@ -213,16 +213,18 @@ export interface VJState {
    *  when standalone / visible. The renderer reads the live bridge value
    *  directly; this field mirrors it for any UI that wants to show it. */
   isTabVisible: boolean;
-  /** Resolume-style clip grid dimensions (square cells). Both can be grown.
-   *  Defaults to 10 columns × 2 rows = a 20-cell bank. */
+  /** Resolume-style clip grid dimensions (square cells). gridCols is clips per
+   *  bank (row width); gridRows is the bank (row) count. Grown via the axis
+   *  +/- buttons. Starts at one bank. */
   gridCols?: number;
   gridRows?: number;
-  /** Active clip-grid bank (page) index. Banks page through videoBucket in
-   *  gridCols×gridRows chunks. */
+  /** Deprecated: legacy bank-paging index, no longer used by the rows model. */
   gridBank?: number;
   /** Collapse/minimize state for the standard layout panels. */
   banksCollapsed?: boolean;
   rightPanelCollapsed?: boolean;
+  /** Collapse state for the Library Pool browser above the banks. */
+  poolCollapsed?: boolean;
 }
 
 
@@ -247,8 +249,9 @@ export const DEFAULT_VJ_STATE: VJState = {
   autoSwitchInterval: 8,
   clipAudio: false,
   gridCols: 10,
-  gridRows: 2,
+  gridRows: 1,
   gridBank: 0,
+  poolCollapsed: false,
 
   hue: 0,
   saturation: 100,

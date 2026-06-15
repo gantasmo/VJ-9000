@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { VJState, VideoClip, DEFAULT_VJ_STATE } from './types';
+import { useLibraryPool, type PoolItem } from './useLibraryPool';
 import { useMedia } from './useMedia';
 import { useQuestCast } from './useQuestCast';
 import { useCymatics } from './useCymatics';
@@ -8,6 +9,7 @@ import { backendBase } from './libraryUpload';
 import { useMidi } from './useMidi';
 import { VideoOutput } from './components/VideoOutput';
 import { ClipGrid } from './components/ClipGrid';
+import { LibraryPool } from './components/LibraryPool';
 import { Waveform } from './components/Waveform';
 import { SourcePreview } from './components/SourcePreview';
 import { ControlDeck } from './components/VJControls';
@@ -33,7 +35,7 @@ import {
   coerceControlValue,
   readControlValue,
 } from './controlManifest';
-import { AlertTriangle, Film, Upload, X as XIcon, ChevronRight, ChevronLeft, PanelRightOpen, PanelRightClose } from 'lucide-react';
+import { AlertTriangle, Film, X as XIcon, ChevronRight, ChevronLeft, PanelRightOpen, PanelRightClose } from 'lucide-react';
 
 const LOCAL_STORAGE_KEY = 'gantasmo_veejay_state_2';
 
@@ -208,6 +210,95 @@ export default function App() {
     setVjState((prev) => ({ ...prev, ...updates }));
   }, []);
 
+  // Library pool — the shared SA3 media library, browsable inside the VJ. Only
+  // fetched in the standard layout (where the pool browser is shown).
+  const pool = useLibraryPool(vjState.layoutMode === 'standard');
+  const stagedIds = useMemo(
+    () => new Set(vjState.videoBucket.map((c) => c.id)),
+    [vjState.videoBucket],
+  );
+
+  // Stage a pool item into the banks. Video/audio append to the bucket as a
+  // reference (no copy) and go live; an image becomes the backdrop slot. Already
+  // staged → just re-activate it. Matches the load-track ingest id scheme so a
+  // DJ→VJ hand-off of the same track collapses to one entry.
+  const stagePoolItem = useCallback((item: PoolItem) => {
+    if (item.kind === 'image') {
+      updateState({ imageUrl: item.url, imageLabel: item.name });
+      return;
+    }
+    const name = item.name.length > 25 ? `${item.name.slice(0, 21)}...` : item.name;
+    setVjState((prev) => {
+      const base = {
+        activeClipId: item.id,
+        clipUrl: item.url,
+        clipLabel: name,
+        clipKind: 'video' as const,
+        sourceType: 'clip' as const,
+        sourceBlend: 1,
+      };
+      if (prev.videoBucket.some((c) => c.id === item.id)) {
+        return { ...prev, ...base };
+      }
+      const clip: VideoClip = { id: item.id, name, url: item.url, kind: 'video' };
+      return { ...prev, videoBucket: [...prev.videoBucket, clip], ...base };
+    });
+  }, [updateState]);
+
+  // Stage a pool item into a SPECIFIC bank slot (drag-drop onto a cell). New
+  // items are inserted at the dropped position; an already-staged item moves
+  // there. Index is clamped so a drop past the end appends.
+  const stagePoolItemAt = useCallback((item: PoolItem, index: number) => {
+    if (item.kind === 'image') {
+      updateState({ imageUrl: item.url, imageLabel: item.name });
+      return;
+    }
+    const name = item.name.length > 25 ? `${item.name.slice(0, 21)}...` : item.name;
+    setVjState((prev) => {
+      const bucket = prev.videoBucket.slice();
+      const existing = bucket.findIndex((c) => c.id === item.id);
+      const clip: VideoClip =
+        existing >= 0 ? bucket.splice(existing, 1)[0] : { id: item.id, name, url: item.url, kind: 'video' };
+      const target = Math.max(0, Math.min(index, bucket.length));
+      bucket.splice(target, 0, clip);
+      return {
+        ...prev,
+        videoBucket: bucket,
+        activeClipId: clip.id,
+        clipUrl: clip.url,
+        clipLabel: clip.name,
+        clipKind: 'video',
+        sourceType: 'clip',
+        sourceBlend: 1,
+      };
+    });
+  }, [updateState]);
+
+  // Reorder an already-staged clip to a specific slot (drag a bank cell).
+  const moveClipToIndex = useCallback((clipId: string, index: number) => {
+    setVjState((prev) => {
+      const bucket = prev.videoBucket.slice();
+      const from = bucket.findIndex((c) => c.id === clipId);
+      if (from < 0) return prev;
+      const [clip] = bucket.splice(from, 1);
+      const target = Math.max(0, Math.min(index, bucket.length));
+      bucket.splice(target, 0, clip);
+      return { ...prev, videoBucket: bucket };
+    });
+  }, []);
+
+  const unstagePoolItem = useCallback((id: string) => {
+    setVjState((prev) => {
+      const filtered = prev.videoBucket.filter((c) => c.id !== id);
+      const patch: Partial<VJState> = { videoBucket: filtered };
+      if (id === prev.activeClipId) {
+        patch.activeClipId = filtered[0]?.id ?? null;
+        patch.clipUrl = filtered[0]?.url ?? null;
+      }
+      return { ...prev, ...patch };
+    });
+  }, []);
+
   // Auto-default the live source to QUEST when an ADB device (Quest) is
   // connected at load. Checked once on mount; only overrides the plain
   // 'device' camera default — a deliberate screen/cymatics choice or a clip is
@@ -216,24 +307,37 @@ export default function App() {
   useEffect(() => {
     if (questAutoChecked.current) return;
     questAutoChecked.current = true;
-    (async () => {
+    let cancelled = false;
+    let attempts = 0;
+    const check = async () => {
+      if (cancelled) return;
+      attempts += 1;
       try {
         const res = await fetch(`${backendBase()}/api/questcast/devices`);
         const body = await res.json();
         const hasDevice =
           Array.isArray(body?.devices) &&
           body.devices.some((d: { state?: string }) => (d?.state ?? 'device') === 'device');
-        if (!hasDevice) return;
-        setVjState((prev) => {
-          if (prev.sourceType === 'camera' && (prev.cameraSource ?? 'device') === 'device') {
-            return { ...prev, cameraSource: 'quest', sourceBlend: 0, cameraReinit: (prev.cameraReinit ?? 0) + 1 };
-          }
-          return prev;
-        });
+        if (hasDevice) {
+          setVjState((prev) => {
+            if (prev.sourceType === 'camera' && (prev.cameraSource ?? 'device') === 'device') {
+              return { ...prev, cameraSource: 'quest', sourceBlend: 0, cameraReinit: (prev.cameraReinit ?? 0) + 1 };
+            }
+            return prev;
+          });
+          return;
+        }
       } catch {
-        /* backend unreachable — leave the source as-is */
+        /* backend / adb not up yet */
       }
-    })();
+      // adb + the backend can take a few seconds to enumerate the headset after
+      // boot, so retry a handful of times before giving up on Quest as default.
+      if (!cancelled && attempts < 6) setTimeout(() => void check(), 1800);
+    };
+    void check();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // ── Control sync: SA3 SLIDE tab ⇄ VJ controls ────────────────────
@@ -691,7 +795,27 @@ export default function App() {
           and its split/preview/fullscreen widths keep working. */}
       <div className={vjState.layoutMode === 'standard' ? 'flex flex-col flex-1 min-w-0 min-h-0' : 'contents'}>
       {vjState.layoutMode === 'standard' && (
-        <ClipGrid state={vjState} updateState={updateState} onFiles={handleFiles} />
+        <LibraryPool
+          items={pool.items}
+          loading={pool.loading}
+          error={pool.error}
+          refresh={pool.refresh}
+          stagedIds={stagedIds}
+          onStage={stagePoolItem}
+          onUnstage={unstagePoolItem}
+          collapsed={!!vjState.poolCollapsed}
+          onToggleCollapse={() => updateState({ poolCollapsed: !vjState.poolCollapsed })}
+        />
+      )}
+      {vjState.layoutMode === 'standard' && (
+        <ClipGrid
+          state={vjState}
+          updateState={updateState}
+          onFiles={handleFiles}
+          onStagePoolItem={stagePoolItem}
+          onStagePoolItemAt={stagePoolItemAt}
+          onMoveClipToIndex={moveClipToIndex}
+        />
       )}
 
       {/* Master Visualizer Component */}
@@ -783,23 +907,18 @@ export default function App() {
         />
 
         {isInitializing && (
-          <div className="absolute inset-0 flex items-center justify-center flex-col text-zinc-500 font-mono tracking-widest uppercase text-sm bg-black z-30">
-            <div className="w-8 h-8 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin mb-6"></div>
-            Loading OMEGA Engine // Wait...
+          <div className="absolute inset-0 flex items-center justify-center flex-col gap-4 text-zinc-400 text-sm bg-black z-30">
+            <div className="w-7 h-7 border-2 border-zinc-600 border-t-transparent rounded-full animate-spin"></div>
+            Loading…
           </div>
         )}
 
         {vjState.sourceType === 'clip' && !vjState.clipUrl && !vjState.imageUrl && !isInitializing && (
-          <div className="absolute inset-0 flex items-center justify-center flex-col text-cyan-500 font-mono text-center p-8 bg-zinc-950 z-30">
-            <Film className="w-16 h-16 mb-6 text-cyan-600 opacity-50" />
-            <h2 className="text-2xl tracking-widest uppercase mb-3 font-bold text-cyan-500">Awaiting Data Core</h2>
-            <p className="text-zinc-500 text-xs uppercase tracking-widest max-w-sm mb-6">
-              No media in memory buffer. Drop or select a video / audio / image file to begin synthesizing.
-            </p>
-            <div className="relative overflow-hidden w-64 h-12 shadow-[0_0_20px_rgba(6,182,212,0.2)]">
-              <button className="w-full h-full flex items-center justify-center gap-2 text-xs uppercase font-mono tracking-widest border border-cyan-500/50 bg-cyan-900/20 text-cyan-300 hover:bg-cyan-500/20 transition-colors cursor-pointer">
-                <Upload className="w-4 h-4" />
-                SELECT LOCAL FILE
+          <div className="absolute inset-0 flex items-center justify-center flex-col text-zinc-500 font-mono text-center p-8 bg-zinc-950 z-30">
+            <div className="relative overflow-hidden">
+              <button className="flex items-center gap-2 px-5 py-3 text-xs lowercase tracking-widest border border-dashed border-zinc-700 bg-black/40 text-zinc-400 hover:bg-purple-950/20 hover:border-purple-500 hover:text-purple-300 transition-colors rounded-sm cursor-pointer">
+                <Film className="w-4 h-4 opacity-70" />
+                media not found. click or drop here to add
               </button>
               <input
                 type="file"
@@ -812,22 +931,13 @@ export default function App() {
                 }}
               />
             </div>
-            <p className="text-[9px] text-zinc-700 mt-4 max-w-sm leading-relaxed">
-              Drop files anywhere on this panel. Audio plays and drives the visualizer; images sit as a backdrop behind the canvas.
-            </p>
           </div>
         )}
 
         {error && vjState.sourceType === 'camera' && !isInitializing && (
-           <div className="absolute inset-0 flex items-center justify-center flex-col text-red-500 font-mono text-center p-8 bg-zinc-950 z-30">
-            <AlertTriangle className="w-16 h-16 mb-6 text-red-600 animate-pulse" />
-            <h2 className="text-2xl tracking-widest uppercase mb-3 font-bold text-red-500">Optics Offline</h2>
-            <p className="text-red-400 mb-6 bg-red-950/40 p-4 border border-red-900/50 rounded inline-block">
-              SYS::ERR {error}
-            </p>
-            <p className="text-zinc-500 text-xs uppercase tracking-widest max-w-sm">
-              Critical failure accessing physical video buffer. Check hardware connections to the mainboard or browser permissions.
-            </p>
+           <div className="absolute inset-0 flex items-center justify-center flex-col text-center p-8 bg-zinc-950 z-30 gap-3">
+            <AlertTriangle className="w-7 h-7 text-zinc-500" />
+            <p className="text-sm text-zinc-300 max-w-sm leading-relaxed">{error}</p>
           </div>
         )}
 

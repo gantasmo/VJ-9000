@@ -14,7 +14,7 @@ import { backendBase } from './libraryUpload';
  *      each frame onto an offscreen canvas.
  *   4. `canvas.captureStream()` exposes that canvas as a live MediaStream, so
  *      the existing `useMedia` camera pipeline can treat the Quest exactly
- *      like a webcam — no getDisplayMedia window picker, no OBS.
+ *      like a webcam -no getDisplayMedia window picker, no OBS.
  *
  * The relay fans out to multiple WebSocket clients, so the host's diagnostic
  * preview and this in-VJ source can decode the same feed in parallel without
@@ -119,8 +119,10 @@ export function useQuestCast(enabled: boolean, view: QuestView = 'full'): QuestC
     let dataPkts = 0;
     let droppedPkts = 0;
     let lastTick = performance.now();
+    let lastFrameAt = performance.now(); // watchdog: time of the last decoded frame
     let backendShown = 0; // how many backend relay log lines already mirrored
     let logPoll: ReturnType<typeof setInterval> | null = null;
+    let watchdog: ReturnType<typeof setInterval> | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let reconnectAttempts = 0;
     // scrcpy sends SPS/PPS as a SEPARATE Annex-B config packet, not in-band with
@@ -129,13 +131,14 @@ export function useQuestCast(enabled: boolean, view: QuestView = 'full'): QuestC
     // never produces a frame. Keep the config bytes and prepend them to each
     // keyframe so the decoder has SPS/PPS.
     let configBytes: Uint8Array | null = null;
+    let loggedPreConfig = false; // throttle the "data before config" log to once per connect
 
     const patch = (next: Partial<QuestCastFeed>) => {
       if (closed) return;
       setFeed((prev) => ({ ...prev, ...next }));
     };
 
-    // Central log sink — console + UI ring buffer, so we can see EVERYTHING.
+    // Central log sink: console + UI ring buffer, so we can see EVERYTHING.
     const logLine = (msg: string) => {
       // eslint-disable-next-line no-console
       console.info('[questcast]', msg);
@@ -149,13 +152,13 @@ export function useQuestCast(enabled: boolean, view: QuestView = 'full'): QuestC
       patch({ state: 'error', error: message });
     };
 
-    logLine(`QUEST source enabled — origin=${window.location.origin}`);
+    logLine(`QUEST source enabled, origin=${window.location.origin}`);
 
     if (!('VideoDecoder' in window)) {
       fail('This browser cannot decode the Quest feed (WebCodecs VideoDecoder unavailable). Use current Chrome or Edge.');
       return;
     }
-    logLine('WebCodecs VideoDecoder available ✓');
+    logLine('WebCodecs VideoDecoder available');
 
     // Lazily create the stable offscreen canvas + capture stream. A fixed
     // capture rate is more reliable for an OFFSCREEN canvas than the
@@ -170,7 +173,7 @@ export function useQuestCast(enabled: boolean, view: QuestView = 'full'): QuestC
     if (!streamRef.current && typeof canvas.captureStream === 'function') {
       streamRef.current = canvas.captureStream(30);
       const t = streamRef.current.getVideoTracks()[0];
-      logLine(`captureStream(30) created — track=${t ? `${t.label || 'canvas'} state=${t.readyState} enabled=${t.enabled}` : 'NONE'}`);
+      logLine(`captureStream(30) created, track=${t ? `${t.label || 'canvas'} state=${t.readyState} enabled=${t.enabled}` : 'NONE'}`);
     } else if (typeof canvas.captureStream !== 'function') {
       logLine('WARNING: canvas.captureStream is not a function in this browser');
     }
@@ -215,15 +218,16 @@ export function useQuestCast(enabled: boolean, view: QuestView = 'full'): QuestC
             }
             framesThisSecond += 1;
             totalFrames += 1;
+            lastFrameAt = performance.now();
             if (totalFrames === 1) {
-              logLine(`FIRST FRAME decoded ${width}×${height} — drawing to canvas ✓`);
+              logLine(`FIRST FRAME decoded ${width}x${height}, drawing to canvas`);
               patch({ state: 'live', width, height });
             }
             const now = performance.now();
             if (now - lastTick >= 1000) {
               const elapsed = now - lastTick;
               const fps = Math.round((framesThisSecond * 1000) / elapsed);
-              logLine(`live ${fps}fps ${width}×${height} (total ${totalFrames} frames, dropped ${droppedPkts} pkts)`);
+              logLine(`live ${fps}fps ${width}x${height} (total ${totalFrames} frames, dropped ${droppedPkts} pkts)`);
               patch({ state: 'live', width, height, fps, error: null });
               framesThisSecond = 0;
               lastTick = now;
@@ -240,7 +244,20 @@ export function useQuestCast(enabled: boolean, view: QuestView = 'full'): QuestC
       configured = true;
       waitingForKeyframe = true;
       patch({ state: 'waiting-video', error: null });
-      logLine('decoder configured — waiting for first keyframe');
+      logLine('decoder configured, waiting for first keyframe');
+    };
+
+    // Detach handlers BEFORE closing so the socket's own onclose can't schedule
+    // yet another reconnect (deliberate teardown != a dropped stream). Without
+    // this, a reconnect orphaned the still-open socket, whose onmessage kept
+    // firing into a reset decode state and flooded "data before config".
+    const teardownSocket = (s: WebSocket | null) => {
+      if (!s) return;
+      s.onopen = null;
+      s.onmessage = null;
+      s.onerror = null;
+      s.onclose = null;
+      try { s.close(); } catch { /* already closed */ }
     };
 
     // Robustness: if the stream drops mid-show (headset display change, relay
@@ -250,12 +267,14 @@ export function useQuestCast(enabled: boolean, view: QuestView = 'full'): QuestC
       if (closed || reconnectTimer) return;
       reconnectAttempts += 1;
       const delay = Math.min(5000, 800 * reconnectAttempts);
-      logLine(`stream dropped (${why}) — reconnecting in ${delay}ms (attempt ${reconnectAttempts})`);
+      logLine(`stream dropped (${why}), reconnecting in ${delay}ms (attempt ${reconnectAttempts})`);
       patch({ state: 'connecting' });
       reconnectTimer = setTimeout(() => {
         reconnectTimer = null;
         if (closed) return;
-        // Reset decode state; the relay replays its config on reconnect.
+        // Drop the old socket + decoder; the relay replays its config on reconnect.
+        teardownSocket(socket);
+        socket = null;
         try { decoder?.close(); } catch { /* already closed */ }
         decoder = null;
         configured = false;
@@ -266,15 +285,19 @@ export function useQuestCast(enabled: boolean, view: QuestView = 'full'): QuestC
     };
 
     const connect = (port: number) => {
+      // Never leave a prior socket open (it would double-decode and flood the log).
+      teardownSocket(socket);
+      socket = null;
+      loggedPreConfig = false;
       const wsUrl = wsUrlForPort(port);
-      logLine(`connecting WebSocket → ${wsUrl}`);
+      logLine(`connecting WebSocket -> ${wsUrl}`);
       socket = new WebSocket(wsUrl);
       socket.binaryType = 'arraybuffer';
       patch({ state: 'connecting', stream, error: null });
 
       socket.onopen = () => {
         reconnectAttempts = 0; // healthy connection resets the backoff
-        logLine('WebSocket open ✓');
+        logLine('WebSocket open');
       };
       socket.onerror = () => logLine(`WebSocket error on ${wsUrl}`);
       socket.onclose = (e) => {
@@ -298,7 +321,7 @@ export function useQuestCast(enabled: boolean, view: QuestView = 'full'): QuestC
         const data = new Uint8Array(buffer, 16);
 
         // Efficiency: when the VJ tab is hidden, the output render loop is
-        // parked anyway — don't burn the HW decoder. Drop data packets and
+        // parked anyway -don't burn the HW decoder. Drop data packets and
         // re-sync on a keyframe when the tab comes back. Full quality whenever
         // the tab is visible (no quality/feature loss while you're using it).
         if (packetType === 1 && typeof document !== 'undefined' && document.hidden) {
@@ -314,15 +337,18 @@ export function useQuestCast(enabled: boolean, view: QuestView = 'full'): QuestC
           return;
         }
         if (packetType !== 1 || !decoder || !configured) {
-          if (packetType === 1 && !configured) logLine('data packet before decoder configured — skipping');
+          if (packetType === 1 && !configured && !loggedPreConfig) {
+            loggedPreConfig = true;
+            logLine('data arriving before the config packet, waiting for config');
+          }
           return;
         }
         dataPkts += 1;
         if (waitingForKeyframe && !keyframe) {
-          if (dataPkts % 30 === 1) logLine(`waiting for keyframe… (${dataPkts} data pkts seen)`);
+          if (dataPkts % 30 === 1) logLine(`waiting for keyframe... (${dataPkts} data pkts seen)`);
           return;
         }
-        if (waitingForKeyframe && keyframe) logLine('FIRST KEYFRAME received — starting decode');
+        if (waitingForKeyframe && keyframe) logLine('FIRST KEYFRAME received, starting decode');
         waitingForKeyframe = false;
         if (decoder.decodeQueueSize > 8) {
           droppedPkts += 1;
@@ -359,12 +385,12 @@ export function useQuestCast(enabled: boolean, view: QuestView = 'full'): QuestC
       patch({ state: 'starting', stream, error: null });
       const base = backendBase();
       logLine(`backend base = ${base}`);
-      // 1. Start (idempotent — returns current status if already running).
-      logLine('POST /api/questcast/start …');
+      // 1. Start (idempotent -returns current status if already running).
+      logLine('POST /api/questcast/start ...');
       try {
         const r = await fetch(`${base}/api/questcast/start`, { method: 'POST' });
         const body = await r.json().catch(() => ({}));
-        logLine(`start → HTTP ${r.status} state=${body?.state ?? '?'} ws_port=${body?.ws_port ?? '?'}${body?.error ? ` error=${body.error}` : ''}`);
+        logLine(`start -> HTTP ${r.status} state=${body?.state ?? '?'} ws_port=${body?.ws_port ?? '?'}${body?.error ? ` error=${body.error}` : ''}`);
         drainBackendLog(body);
       } catch (err) {
         fail(`Could not reach theDAW backend to start the Quest relay (${err instanceof Error ? err.message : String(err)}).`);
@@ -408,13 +434,43 @@ export function useQuestCast(enabled: boolean, view: QuestView = 'full'): QuestC
       if (!closed) fail('Quest relay did not become ready within 30s. Check the log above (adb device? scrcpy? ws port?).');
     };
 
+    // Watchdog: when the feed is visible but frames stop arriving (the Quest
+    // slept / display turned off -> scrcpy video-ended), recover on our own so
+    // the user never has to refresh or toggle. While the tab is hidden we drop
+    // packets on purpose, so we only count a stall when visible.
+    const STALL_MS = 5000;
+    watchdog = setInterval(() => {
+      if (closed || (typeof document !== 'undefined' && document.hidden)) return;
+      if (!socket || socket.readyState !== WebSocket.OPEN) return;
+      if (performance.now() - lastFrameAt > STALL_MS) {
+        logLine('feed stalled (no frames for 5s), recovering');
+        scheduleReconnect('stall');
+      }
+    }, 2000);
+
+    // Coming back from sleep / tab-switch: recover immediately if stale.
+    const onVisible = () => {
+      if (closed || document.hidden) return;
+      if (performance.now() - lastFrameAt > 3000) {
+        logLine('tab visible again, refreshing the Quest feed');
+        scheduleReconnect('wake');
+      }
+    };
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', onVisible);
+    }
+
     void boot();
 
     return () => {
       closed = true;
-      logLine('QUEST source disabled — tearing down WebSocket + decoder');
+      logLine('QUEST source disabled, tearing down WebSocket + decoder');
       if (logPoll) clearInterval(logPoll);
+      if (watchdog) clearInterval(watchdog);
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', onVisible);
+      }
       try {
         socket?.close();
       } catch {
