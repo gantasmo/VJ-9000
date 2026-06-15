@@ -15,7 +15,8 @@ export const Waveform: React.FC<{
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext('2d');
+    // willReadFrequently: the scroll effect calls getImageData every frame.
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return;
 
     const resize = () => {

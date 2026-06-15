@@ -344,7 +344,7 @@ export function VideoOutput({ vjState, videoRef, cameraVideoRef, clipVideoRef, g
     flowSampleCanvas.height = FLOW_H;
     const flowSampleCtx = flowSampleCanvas.getContext('2d', { alpha: false, willReadFrequently: true });
     const fxScratch = document.createElement('canvas');
-    const fxScratchCtx = fxScratch.getContext('2d', { alpha: false });
+    const fxScratchCtx = fxScratch.getContext('2d', { alpha: false, willReadFrequently: true });
 
     // ── Category B scratch buffers (pseudo-depth volumetric looks) ──
     // A single shared "depth proxy" is derived once per frame from a

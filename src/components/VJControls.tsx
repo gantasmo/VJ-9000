@@ -502,7 +502,7 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
                 highlight="purple"
               />
               <TogglePad
-                label="LBR8"
+                label="delinQuest"
                 active={state.cameraSource === 'quest'}
                 onClick={() => updateState({
                   sourceType: 'camera',
@@ -574,12 +574,12 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
                   <Tv2 className="w-3 h-3 shrink-0" />
                   <span className="truncate">
                     {questState === 'live'
-                      ? `Quest live · ${questFps}fps`
+                      ? `delinQuest live · ${questFps}fps`
                       : questState === 'error'
-                      ? 'Quest feed error'
+                      ? 'delinQuest feed error'
                       : questState === 'idle'
-                      ? 'Quest starting…'
-                      : `Quest ${questState}…`}
+                      ? 'delinQuest starting…'
+                      : `delinQuest ${questState}…`}
                   </span>
                 </span>
               </div>
@@ -589,7 +589,7 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
                 className="text-[10px] font-mono uppercase tracking-[0.3em] text-zinc-400 cursor-help w-fit"
                 title="stream 16x9 or SBS3D from Meta Quest via USB or wireless ADB without Link or MQDH (must have USB Debugging enabled)"
               >
-                LBR8
+                delinQuest
               </p>
             )}
             {state.cameraSource === 'screen' && (

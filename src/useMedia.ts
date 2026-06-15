@@ -117,7 +117,12 @@ export function useMedia(
           });
       } else {
           memVideo.onerror = null;
-          memVideo.src = '';
+          // Do NOT clear with src='' — an empty string resolves to the document
+          // URL, so the media element tries to decode the HTML page and Chromium
+          // logs PIPELINE_ERROR_DECODE ("failed to send audio packet ... size=2")
+          // on boot. removeAttribute + load() clears the element cleanly.
+          memVideo.removeAttribute('src');
+          memVideo.load();
       }
 
       // Generative sources (Quest relay / Cymatics): bind the caller-owned
