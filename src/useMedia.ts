@@ -1,6 +1,22 @@
 import { useState, useEffect, useRef } from 'react';
 
 /**
+ * A play() promise rejected because the element was paused / swapped mid-load
+ * is NOT a failure — it's the normal outcome of a quick source switch. These
+ * AbortErrors must never surface as an on-screen error.
+ */
+function isBenignPlayInterruption(e: unknown): boolean {
+  const name = (e as { name?: string })?.name ?? '';
+  const msg = String((e as { message?: string })?.message ?? e ?? '').toLowerCase();
+  return (
+    name === 'AbortError' ||
+    msg.includes('interrupted by a call to pause') ||
+    msg.includes('request was interrupted') ||
+    msg.includes('media was removed from the document')
+  );
+}
+
+/**
  * Turn a getUserMedia / getDisplayMedia DOMException into a plain-language
  * instruction the user can act on, instead of surfacing the raw "Permission
  * denied" / "Requested device not found" text. Keyed on the spec error names,
@@ -94,7 +110,10 @@ export function useMedia(
           };
           memVideo.onerror = onErr;
           memVideo.play().catch((e) => {
-            if (active) setError('Video Decode Failure: ' + (e?.message ?? String(e)));
+            // Ignore benign play/pause races (AbortError) — they're not failures.
+            if (active && !isBenignPlayInterruption(e)) {
+              setError('Video Decode Failure: ' + (e?.message ?? String(e)));
+            }
           });
       } else {
           memVideo.onerror = null;
@@ -131,7 +150,7 @@ export function useMedia(
             .then(() => console.info(`[${cameraSource}] useMedia: camVideo.play() ok`))
             .catch((e) => {
               console.warn(`[${cameraSource}] useMedia: camVideo.play() failed —`, e?.message ?? e);
-              if (active) setError(e?.message ?? String(e));
+              if (active && !isBenignPlayInterruption(e)) setError(e?.message ?? String(e));
             });
         }
         if (active) {
@@ -201,7 +220,7 @@ export function useMedia(
         }
         camVideo.srcObject = stream;
         camVideo.play().catch(e => {
-          if (active) setError(e.message);
+          if (active && !isBenignPlayInterruption(e)) setError(e.message);
         });
         if (active) setError(null);
       } catch (err: any) {

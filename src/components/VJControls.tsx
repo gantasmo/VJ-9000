@@ -25,6 +25,17 @@ const AUTOPILOT_EFFECTS = [
   { key: 'equirect', label: 'Panoramic Warp' },
 ];
 
+// Hover hint for the Import Media button. Lists what the in-browser pipeline
+// can actually decode; the "not supported" tail explains the gaps (containers
+// and codecs Chrome/WebCodecs can't play — transcode those first).
+const IMPORT_MEDIA_TOOLTIP =
+  'Import media into the bank.\n' +
+  'Video: MP4 / M4V (H.264, H.265/HEVC), WebM (VP8/VP9/AV1), MOV (H.264).\n' +
+  'Audio: MP3, WAV, FLAC, AAC / M4A, OGG, Opus.\n' +
+  'Images: PNG, JPG, WebP, GIF, AVIF, BMP.\n' +
+  'Not supported: ProRes / DNxHD .mov, alpha-HEVC MP4, .mkv / .avi / .flv. ' +
+  'Transcode those first; for transparent overlays use VP9-alpha WebM.';
+
 interface ControlsProps {
   state: VJState;
   updateState: (updates: Partial<VJState>) => void;
@@ -97,7 +108,7 @@ const QuestLogPanel: React.FC<{ log: string[] }> = ({ log }) => {
               className={`text-[8px] font-mono leading-tight break-all ${
                 /ERROR|ABORT|fail/i.test(line)
                   ? 'text-rose-300'
-                  : /✓|FIRST FRAME|ready|live/i.test(line)
+                  : /FIRST FRAME|FIRST KEYFRAME|ready|live/i.test(line)
                   ? 'text-emerald-300/90'
                   : 'text-zinc-400'
               }`}
@@ -423,7 +434,7 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
           IMPORT controls, and the Archive Bin. */}
       <section className="mx-3 mt-3 mb-0 p-3 border border-zinc-800 bg-black/30 rounded space-y-3">
         <h2 className="text-[10px] text-zinc-400 uppercase tracking-widest font-mono border-b border-zinc-800 pb-1 mb-1 flex items-center gap-2">
-          <Radio className="w-3 h-3 text-fuchsia-500" /> SOURCE // MATRIX
+          <Radio className="w-3 h-3 text-fuchsia-500" /> SOURCE
         </h2>
 
         {/* CAM/MEM toggles + crossfader. sourceBlend is the canonical
@@ -491,7 +502,7 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
                 highlight="purple"
               />
               <TogglePad
-                label="QUEST"
+                label="LBR8"
                 active={state.cameraSource === 'quest'}
                 onClick={() => updateState({
                   sourceType: 'camera',
@@ -573,11 +584,17 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
                 </span>
               </div>
             )}
-            {state.cameraSource !== 'cymatics' && (
+            {state.cameraSource === 'quest' && (
+              <p
+                className="text-[10px] font-mono uppercase tracking-[0.3em] text-zinc-400 cursor-help w-fit"
+                title="stream 16x9 or SBS3D from Meta Quest via USB or wireless ADB without Link or MQDH (must have USB Debugging enabled)"
+              >
+                LBR8
+              </p>
+            )}
+            {state.cameraSource === 'screen' && (
               <p className="text-[8px] font-mono text-zinc-600 leading-snug">
-                {state.cameraSource === 'quest'
-                  ? 'QUEST decodes the headset directly over ADB — connect by USB (with USB debugging enabled) or wireless ADB. No window picker, no OBS.'
-                  : 'SCREEN captures a window or display (e.g. a scrcpy-mirrored Quest). No OBS needed.'}
+                Captures a window or display. No OBS needed.
               </p>
             )}
             {state.cameraSource === 'quest' && questError && (
@@ -626,8 +643,8 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
           </div>
         </div>
 
-        {/* MUTE (square) + SELECT & IMPORT VIDEO CLIPS row. MUTE is the
-            user-requested rename of the old "CLIP AUDIO ON/OFF" wide bar. */}
+        {/* MUTE (square) + Import Media row. MUTE is the user-requested
+            rename of the old "CLIP AUDIO ON/OFF" wide bar. */}
         <div className="flex gap-2 items-stretch">
           <button
             onClick={() => updateState({ clipAudio: !state.clipAudio })}
@@ -643,9 +660,12 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
             <span className="text-[7px] mt-0.5 opacity-70">{state.clipAudio ? 'ON' : 'OFF'}</span>
           </button>
           <div className="relative overflow-hidden flex-1">
-            <button className="w-full h-12 flex items-center justify-center gap-2 text-[10px] uppercase font-mono tracking-widest border border-dashed border-zinc-700 bg-zinc-800/10 text-zinc-400 hover:bg-purple-950/20 hover:border-purple-500 hover:text-purple-300 transition-all rounded-sm cursor-pointer">
+            <button
+              className="w-full h-12 flex items-center justify-center gap-2 text-[10px] uppercase font-mono tracking-widest border border-dashed border-zinc-700 bg-zinc-800/10 text-zinc-400 hover:bg-purple-950/20 hover:border-purple-500 hover:text-purple-300 transition-all rounded-sm cursor-pointer"
+              title={IMPORT_MEDIA_TOOLTIP}
+            >
               <Upload className="w-4 h-4" />
-              SELECT &amp; IMPORT VIDEO CLIPS
+              Import Media
             </button>
             <input
               id="vj-import-clips"
