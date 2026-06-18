@@ -46,6 +46,11 @@ interface ControlsProps {
   questError?: string | null;
   questFps?: number;
   questLog?: string[];
+  /** Clean Quest stitch feed status (from useQuestStitch in App). */
+  stitchState?: 'idle' | 'starting' | 'connecting' | 'waiting-video' | 'live' | 'error';
+  stitchError?: string | null;
+  stitchFps?: number;
+  stitchLog?: string[];
 }
 
 /** Scrollable QuestCast diagnostics log — the whole pipeline (frontend +
@@ -125,7 +130,7 @@ const QuestLogPanel: React.FC<{ log: string[] }> = ({ log }) => {
 // Memoized so the deck only re-renders when its props actually change — not
 // every time the parent App re-renders for an unrelated reason. updateState is
 // stabilized with useCallback in App so this memo bites.
-function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState = 'idle', questError = null, questFps = 0, questLog = [] }: ControlsProps) {
+function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState = 'idle', questError = null, questFps = 0, questLog = [], stitchState = 'idle', stitchError = null, stitchFps = 0, stitchLog = [] }: ControlsProps) {
   const [showWeights, setShowWeights] = useState(true);
   const [showApDynamics, setShowApDynamics] = useState(false);
   const [showExportFolder, setShowExportFolder] = useState(false);
@@ -513,6 +518,17 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
                 highlight="purple"
               />
               <TogglePad
+                label="STITCH"
+                active={state.cameraSource === 'queststitch'}
+                onClick={() => updateState({
+                  sourceType: 'camera',
+                  sourceBlend: 0,
+                  cameraSource: 'queststitch',
+                  cameraReinit: (state.cameraReinit ?? 0) + 1,
+                })}
+                highlight="purple"
+              />
+              <TogglePad
                 label="CYMATICS"
                 active={state.cameraSource === 'cymatics'}
                 onClick={() => updateState({
@@ -612,6 +628,37 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
             )}
             {state.cameraSource === 'quest' && (
               <QuestLogPanel log={questLog} />
+            )}
+            {state.cameraSource === 'queststitch' && (
+              <div
+                className={`flex items-center justify-between gap-2 px-2 py-1.5 rounded border text-[9px] font-mono uppercase tracking-widest ${
+                  stitchState === 'live'
+                    ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
+                    : stitchState === 'error'
+                    ? 'border-rose-500/40 bg-rose-500/10 text-rose-200'
+                    : 'border-sky-500/40 bg-sky-500/10 text-sky-200'
+                }`}
+                title={stitchError ?? 'Clean stitched Quest passthrough streamed over ADB (separate from delinQuest, which mirrors the whole headset display).'}
+              >
+                <span className="flex items-center gap-1.5 min-w-0">
+                  <Tv2 className="w-3 h-3 shrink-0" />
+                  <span className="truncate">
+                    {stitchState === 'live'
+                      ? `Quest stitch live · ${stitchFps}fps`
+                      : stitchState === 'error'
+                      ? 'Quest stitch feed error'
+                      : stitchState === 'idle'
+                      ? 'Quest stitch starting…'
+                      : `Quest stitch ${stitchState}…`}
+                  </span>
+                </span>
+              </div>
+            )}
+            {state.cameraSource === 'queststitch' && stitchError && (
+              <p className="text-[8px] font-mono text-rose-300/80 leading-snug">{stitchError}</p>
+            )}
+            {state.cameraSource === 'queststitch' && (
+              <QuestLogPanel log={stitchLog} />
             )}
             {state.cameraSource === 'cymatics' && (
               <div className="space-y-1.5">

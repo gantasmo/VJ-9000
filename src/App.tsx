@@ -3,6 +3,7 @@ import { VJState, VideoClip, DEFAULT_VJ_STATE } from './types';
 import { useLibraryPool, type PoolItem } from './useLibraryPool';
 import { useMedia } from './useMedia';
 import { useQuestCast } from './useQuestCast';
+import { useQuestStitch } from './useQuestStitch';
 import { useCymatics } from './useCymatics';
 import { useAudioAnalyzer } from './useAudioAnalyzer';
 import { backendBase } from './libraryUpload';
@@ -106,6 +107,12 @@ export default function App() {
     vjState.questView ?? 'full',
   );
 
+  // Clean Quest STITCH source — the stitched passthrough RenderTexture streamed
+  // on its own (separate from delinQuest, which mirrors the whole headset display).
+  const stitchFeed = useQuestStitch(
+    vjState.sourceType === 'camera' && vjState.cameraSource === 'queststitch',
+  );
+
   // Cymatics generative source — theDAW's reflective black-chrome visual,
   // audio-reactive, mixable through the CAM↔MEM crossfader + all effects.
   const cymaticsFeed = useCymatics(
@@ -122,6 +129,7 @@ export default function App() {
     vjState.cameraReinit ?? 0,
     questFeed.stream,
     cymaticsFeed.stream,
+    stitchFeed.stream,
   );
 
   // SA3 → VJ playback commands. The PlayerFooter in SA3 sends
@@ -999,6 +1007,9 @@ export default function App() {
         {vjState.layoutMode === 'standard' && vjState.sourceType === 'camera' && vjState.cameraSource === 'quest' && questFeed.stream && (
           <SourcePreview stream={questFeed.stream} label="Quest" />
         )}
+        {vjState.layoutMode === 'standard' && vjState.sourceType === 'camera' && vjState.cameraSource === 'queststitch' && stitchFeed.stream && (
+          <SourcePreview stream={stitchFeed.stream} label="Quest Stitch" />
+        )}
         {vjState.layoutMode === 'standard' && vjState.sourceType === 'camera' && vjState.cameraSource === 'cymatics' && cymaticsFeed.stream && (
           <SourcePreview stream={cymaticsFeed.stream} label="Cymatics" />
         )}
@@ -1011,6 +1022,10 @@ export default function App() {
           questError={questFeed.error}
           questFps={questFeed.fps}
           questLog={questFeed.log}
+          stitchState={stitchFeed.state}
+          stitchError={stitchFeed.error}
+          stitchFps={stitchFeed.fps}
+          stitchLog={stitchFeed.log}
         />
       </aside>
 

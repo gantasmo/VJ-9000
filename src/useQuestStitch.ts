@@ -2,27 +2,25 @@ import { useEffect, useRef, useState } from 'react';
 import { backendBase } from './libraryUpload';
 
 /**
- * Direct Quest (or any ADB device) video source for the VJ.
+ * Direct Quest CLEAN-STITCH video source for the VJ.
  *
- * theDAW's backend runs a `questcast` Node sidecar that speaks the scrcpy
- * protocol over ADB and relays the raw H.264 packets over a WebSocket. This
- * hook (running INSIDE the VJ app) drives that relay end-to-end:
+ * This is the sibling of `useQuestCast` (delinQuest). delinQuest mirrors the
+ * whole Quest *display* via scrcpy, so it carries the MR scene + MIDI surface
+ * the performer is looking at. THIS source carries only the clean stitched
+ * passthrough: the Quest app (`GantasmoStitchStreamer`) MediaCodec-encodes the
+ * stitch RenderTexture to H.264 and pushes it over `adb reverse` to theDAW's
+ * `queststitch` backend module, which relays it over a WebSocket in the SAME
+ * wire format questcast uses. So the decode path here is identical to
+ * useQuestCast — only the transport differs (one FastAPI WebSocket on the
+ * backend origin, no ws_port poll, no stereo crop).
  *
- *   1. POST /api/questcast/start (idempotent) so the relay is up.
- *   2. Poll /api/questcast/status until it reports `ready` + a `ws_port`.
- *   3. Open the WebSocket, decode the H.264 stream with WebCodecs, and draw
- *      each frame onto an offscreen canvas.
- *   4. `canvas.captureStream()` exposes that canvas as a live MediaStream, so
- *      the existing `useMedia` camera pipeline can treat the Quest exactly
- *      like a webcam -no getDisplayMedia window picker, no OBS.
- *
- * The relay fans out to multiple WebSocket clients, so the host's diagnostic
- * preview and this in-VJ source can decode the same feed in parallel without
- * conflict. We never auto-stop the relay on disable (that would kill the host
- * preview and re-spawn scrcpy on re-enable); the host owns Stop.
+ *   1. POST /api/queststitch/start (idempotent) so the listener + adb reverse are up.
+ *   2. Open ws(s)://<backend>/api/queststitch/ws and decode H.264 with WebCodecs.
+ *   3. Draw each frame onto an offscreen canvas; canvas.captureStream() exposes
+ *      it as a live MediaStream the existing `useMedia` pipeline treats like a webcam.
  */
 
-type QuestCastState =
+type QuestStitchState =
   | 'idle'
   | 'starting'
   | 'connecting'
@@ -30,10 +28,10 @@ type QuestCastState =
   | 'live'
   | 'error';
 
-export interface QuestCastFeed {
+export interface QuestStitchFeed {
   /** Stable canvas-captured MediaStream, or null until the relay is ready. */
   stream: MediaStream | null;
-  state: QuestCastState;
+  state: QuestStitchState;
   error: string | null;
   fps: number;
   width: number | null;
@@ -42,7 +40,7 @@ export interface QuestCastFeed {
   log: string[];
 }
 
-const initialFeed: QuestCastFeed = {
+const initialFeed: QuestStitchFeed = {
   stream: null,
   state: 'idle',
   error: null,
@@ -54,10 +52,9 @@ const initialFeed: QuestCastFeed = {
 
 const LOG_CAP = 200;
 
-const wsUrlForPort = (port: number): string => {
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const host = window.location.hostname || 'localhost';
-  return `${protocol}//${host}:${port}`;
+const wsUrl = (): string => {
+  const base = backendBase().replace(/^http/, 'ws');
+  return `${base}/api/queststitch/ws`;
 };
 
 const byteHex = (value: number) => value.toString(16).padStart(2, '0').toUpperCase();
@@ -88,20 +85,13 @@ const h264CodecFromAnnexB = (data: Uint8Array): string | null => {
   return null;
 };
 
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-export type QuestView = 'full' | 'left' | 'right';
-
-export function useQuestCast(enabled: boolean, view: QuestView = 'full'): QuestCastFeed {
-  const [feed, setFeed] = useState<QuestCastFeed>(initialFeed);
+export function useQuestStitch(enabled: boolean): QuestStitchFeed {
+  const [feed, setFeed] = useState<QuestStitchFeed>(initialFeed);
 
   // The captured canvas + its stream are created once and kept stable so the
   // downstream camera <video> element only has to bind the srcObject one time.
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  // Live crop selection read by the decode loop (changes without rebuilding).
-  const viewRef = useRef<QuestView>(view);
-  viewRef.current = view;
 
   useEffect(() => {
     if (!enabled) {
@@ -116,32 +106,32 @@ export function useQuestCast(enabled: boolean, view: QuestView = 'full'): QuestC
     let waitingForKeyframe = true;
     let framesThisSecond = 0;
     let totalFrames = 0;
+    // True once we've decoded at least one frame. The Quest streamer is a
+    // separate app that is often simply idle, so an OPEN WebSocket with no
+    // frames yet is the normal waiting state — NOT a stall. We only treat a
+    // gap as a stall (and reconnect) after the feed has actually been live.
+    let everLive = false;
     let dataPkts = 0;
     let droppedPkts = 0;
     let lastTick = performance.now();
     let lastFrameAt = performance.now(); // watchdog: time of the last decoded frame
-    let backendShown = 0; // how many backend relay log lines already mirrored
-    let logPoll: ReturnType<typeof setInterval> | null = null;
     let watchdog: ReturnType<typeof setInterval> | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let reconnectAttempts = 0;
-    // scrcpy sends SPS/PPS as a SEPARATE Annex-B config packet, not in-band with
-    // the keyframe. WebCodecs (configured without a `description`, i.e. Annex-B
-    // mode) needs those NALs present in the access unit or it accepts chunks but
-    // never produces a frame. Keep the config bytes and prepend them to each
-    // keyframe so the decoder has SPS/PPS.
+    // SPS/PPS arrive as a SEPARATE Annex-B config packet; WebCodecs (Annex-B
+    // mode) needs them present in the access unit, so keep them and prepend to
+    // each keyframe.
     let configBytes: Uint8Array | null = null;
-    let loggedPreConfig = false; // throttle the "data before config" log to once per connect
+    let loggedPreConfig = false;
 
-    const patch = (next: Partial<QuestCastFeed>) => {
+    const patch = (next: Partial<QuestStitchFeed>) => {
       if (closed) return;
       setFeed((prev) => ({ ...prev, ...next }));
     };
 
-    // Central log sink: console + UI ring buffer, so we can see EVERYTHING.
     const logLine = (msg: string) => {
       // eslint-disable-next-line no-console
-      console.info('[questcast]', msg);
+      console.info('[queststitch]', msg);
       if (closed) return;
       const stamped = `${new Date().toLocaleTimeString()} ${msg}`;
       setFeed((prev) => ({ ...prev, log: [...prev.log, stamped].slice(-LOG_CAP) }));
@@ -152,18 +142,14 @@ export function useQuestCast(enabled: boolean, view: QuestView = 'full'): QuestC
       patch({ state: 'error', error: message });
     };
 
-    logLine(`QUEST source enabled, origin=${window.location.origin}`);
+    logLine(`QUEST STITCH source enabled, origin=${window.location.origin}`);
 
     if (!('VideoDecoder' in window)) {
-      fail('This browser cannot decode the Quest feed (WebCodecs VideoDecoder unavailable). Use current Chrome or Edge.');
+      fail('This browser cannot decode the Quest stitch (WebCodecs VideoDecoder unavailable). Use current Chrome or Edge.');
       return;
     }
-    logLine('WebCodecs VideoDecoder available');
 
-    // Lazily create the stable offscreen canvas + capture stream. A fixed
-    // capture rate is more reliable for an OFFSCREEN canvas than the
-    // draw-driven default (which some Chrome builds stall on when the canvas
-    // is detached from the DOM).
+    // Lazily create the stable offscreen canvas + capture stream.
     if (!canvasRef.current) {
       canvasRef.current = document.createElement('canvas');
       canvasRef.current.width = 1280;
@@ -173,7 +159,7 @@ export function useQuestCast(enabled: boolean, view: QuestView = 'full'): QuestC
     if (!streamRef.current && typeof canvas.captureStream === 'function') {
       streamRef.current = canvas.captureStream(30);
       const t = streamRef.current.getVideoTracks()[0];
-      logLine(`captureStream(30) created, track=${t ? `${t.label || 'canvas'} state=${t.readyState} enabled=${t.enabled}` : 'NONE'}`);
+      logLine(`captureStream(30) created, track=${t ? `${t.label || 'canvas'} state=${t.readyState}` : 'NONE'}`);
     } else if (typeof canvas.captureStream !== 'function') {
       logLine('WARNING: canvas.captureStream is not a function in this browser');
     }
@@ -193,33 +179,17 @@ export function useQuestCast(enabled: boolean, view: QuestView = 'full'): QuestC
             if (!ctx) return;
             const width = frame.displayWidth || frame.codedWidth || 1280;
             const height = frame.displayHeight || frame.codedHeight || 720;
-            // The Quest mirrors a side-by-side stereo image. `view` lets the
-            // user pick the full SBS frame or crop one eye to a clean 16:9.
-            const view = viewRef.current;
-            if (view === 'full') {
-              if (canvas.width !== width || canvas.height !== height) {
-                canvas.width = width;
-                canvas.height = height;
-              }
-              ctx.drawImage(frame, 0, 0, width, height);
-            } else {
-              // One eye = a half-width column; crop a centered 16:9 band from it.
-              const eyeW = Math.floor(width / 2);
-              const sx = view === 'right' ? width - eyeW : 0;
-              const cropH = Math.min(height, Math.round((eyeW * 9) / 16));
-              const sy = Math.floor((height - cropH) / 2);
-              const outW = 1280;
-              const outH = 720;
-              if (canvas.width !== outW || canvas.height !== outH) {
-                canvas.width = outW;
-                canvas.height = outH;
-              }
-              ctx.drawImage(frame, sx, sy, eyeW, cropH, 0, 0, outW, outH);
+            // The stitch is a single 16:9 image — draw it whole (no stereo crop).
+            if (canvas.width !== width || canvas.height !== height) {
+              canvas.width = width;
+              canvas.height = height;
             }
+            ctx.drawImage(frame, 0, 0, width, height);
             framesThisSecond += 1;
             totalFrames += 1;
             lastFrameAt = performance.now();
             if (totalFrames === 1) {
+              everLive = true;
               logLine(`FIRST FRAME decoded ${width}x${height}, drawing to canvas`);
               patch({ state: 'live', width, height });
             }
@@ -247,10 +217,6 @@ export function useQuestCast(enabled: boolean, view: QuestView = 'full'): QuestC
       logLine('decoder configured, waiting for first keyframe');
     };
 
-    // Detach handlers BEFORE closing so the socket's own onclose can't schedule
-    // yet another reconnect (deliberate teardown != a dropped stream). Without
-    // this, a reconnect orphaned the still-open socket, whose onmessage kept
-    // firing into a reset decode state and flooded "data before config".
     const teardownSocket = (s: WebSocket | null) => {
       if (!s) return;
       s.onopen = null;
@@ -260,9 +226,6 @@ export function useQuestCast(enabled: boolean, view: QuestView = 'full'): QuestC
       try { s.close(); } catch { /* already closed */ }
     };
 
-    // Robustness: if the stream drops mid-show (headset display change, relay
-    // restart, scrcpy `video-ended`), auto-recover by re-booting the relay and
-    // reconnecting, with a short backoff. Never give up while still enabled.
     const scheduleReconnect = (why: string) => {
       if (closed || reconnectTimer) return;
       reconnectAttempts += 1;
@@ -272,7 +235,6 @@ export function useQuestCast(enabled: boolean, view: QuestView = 'full'): QuestC
       reconnectTimer = setTimeout(() => {
         reconnectTimer = null;
         if (closed) return;
-        // Drop the old socket + decoder; the relay replays its config on reconnect.
         teardownSocket(socket);
         socket = null;
         try { decoder?.close(); } catch { /* already closed */ }
@@ -284,22 +246,22 @@ export function useQuestCast(enabled: boolean, view: QuestView = 'full'): QuestC
       }, delay);
     };
 
-    const connect = (port: number) => {
-      // Never leave a prior socket open (it would double-decode and flood the log).
+    const connect = () => {
       teardownSocket(socket);
       socket = null;
       loggedPreConfig = false;
-      const wsUrl = wsUrlForPort(port);
-      logLine(`connecting WebSocket -> ${wsUrl}`);
-      socket = new WebSocket(wsUrl);
+      const url = wsUrl();
+      logLine(`connecting WebSocket -> ${url}`);
+      socket = new WebSocket(url);
       socket.binaryType = 'arraybuffer';
       patch({ state: 'connecting', stream, error: null });
 
       socket.onopen = () => {
-        reconnectAttempts = 0; // healthy connection resets the backoff
+        reconnectAttempts = 0;
+        lastFrameAt = performance.now(); // fresh grace window; don't trip the watchdog instantly
         logLine('WebSocket open');
       };
-      socket.onerror = () => logLine(`WebSocket error on ${wsUrl}`);
+      socket.onerror = () => logLine(`WebSocket error on ${url}`);
       socket.onclose = (e) => {
         logLine(`WebSocket closed (code=${e.code} reason=${e.reason || 'none'})`);
         socket = null;
@@ -320,20 +282,25 @@ export function useQuestCast(enabled: boolean, view: QuestView = 'full'): QuestC
         const timestamp = Math.max(0, Math.round(view.getFloat64(8, true) || performance.now() * 1000));
         const data = new Uint8Array(buffer, 16);
 
-        // Efficiency: when the VJ tab is hidden, the output render loop is
-        // parked anyway -don't burn the HW decoder. Drop data packets and
-        // re-sync on a keyframe when the tab comes back. Full quality whenever
-        // the tab is visible (no quality/feature loss while you're using it).
+        // When the VJ tab is hidden the output loop is parked; don't burn the
+        // HW decoder. Drop data packets and re-sync on a keyframe when visible.
         if (packetType === 1 && typeof document !== 'undefined' && document.hidden) {
           waitingForKeyframe = true;
           return;
         }
 
         if (packetType === 0) {
-          logLine(`config packet (${data.byteLength}B) received`);
-          // Copy out of the WS buffer; we prepend it to keyframes below.
-          configBytes = new Uint8Array(data);
-          configureDecoder(h264CodecFromAnnexB(data) ?? 'avc1.42E01E');
+          // The streamer re-sends config before EVERY keyframe so late joiners can
+          // configure. Only (re)build the decoder when the config actually changes —
+          // otherwise we'd tear the decoder down ~once a second and stutter.
+          const next = new Uint8Array(data);
+          const prev = configBytes;
+          const changed = !prev || prev.length !== next.length || !next.every((b, i) => b === prev[i]);
+          configBytes = next;
+          if (!configured || changed) {
+            logLine(`config packet (${next.byteLength}B) received${configured ? ' (changed -> reconfigure)' : ''}`);
+            configureDecoder(h264CodecFromAnnexB(next) ?? 'avc1.42E01E');
+          }
           return;
         }
         if (packetType !== 1 || !decoder || !configured) {
@@ -354,7 +321,6 @@ export function useQuestCast(enabled: boolean, view: QuestView = 'full'): QuestC
           droppedPkts += 1;
           return; // drop to stay near-live
         }
-        // Prepend SPS/PPS to keyframes so the Annex-B decoder has them in-band.
         let chunkData: Uint8Array = data;
         if (keyframe && configBytes) {
           chunkData = new Uint8Array(configBytes.length + data.length);
@@ -369,107 +335,43 @@ export function useQuestCast(enabled: boolean, view: QuestView = 'full'): QuestC
       };
     };
 
-    // Mirror new backend relay log lines into our UI log so the WHOLE pipeline
-    // is visible in one place (frontend + relay + scrcpy + adb).
-    const drainBackendLog = (status: { log?: unknown }) => {
-      const lines = Array.isArray(status.log) ? (status.log as string[]) : null;
-      if (!lines) return;
-      if (lines.length < backendShown) backendShown = 0; // relay restarted
-      for (let i = backendShown; i < lines.length; i += 1) {
-        logLine(`[backend] ${lines[i]}`);
-      }
-      backendShown = lines.length;
-    };
-
     const boot = async () => {
       patch({ state: 'starting', stream, error: null });
       const base = backendBase();
       logLine(`backend base = ${base}`);
-      // 1. Start (idempotent -returns current status if already running).
-      logLine('POST /api/questcast/start ...');
+      // Start (idempotent): ensures the TCP listener + adb reverse are up.
       try {
-        const r = await fetch(`${base}/api/questcast/start`, { method: 'POST' });
+        const r = await fetch(`${base}/api/queststitch/start`, { method: 'POST' });
         const body = await r.json().catch(() => ({}));
-        logLine(`start -> HTTP ${r.status} state=${body?.state ?? '?'} ws_port=${body?.ws_port ?? '?'}${body?.error ? ` error=${body.error}` : ''}`);
-        drainBackendLog(body);
+        logLine(`start -> HTTP ${r.status} adb_reverse_ok=${body?.adb_reverse_ok ?? '?'} quest=${body?.quest_connected ?? '?'}`);
       } catch (err) {
-        // The backend may simply not be listening yet (VJ iframe loaded faster
-        // than the FastAPI server). Don't dead-end — retry on a backoff so the
-        // feed comes up on its own instead of needing a manual refresh.
         logLine(`could not reach backend to start the relay: ${err instanceof Error ? err.message : String(err)}`);
         scheduleReconnect('backend unreachable');
         return;
       }
-      // 2. Poll status until ready or error (~30s budget).
-      const deadline = performance.now() + 30000;
-      while (!closed && performance.now() < deadline) {
-        let status: { state?: string; running?: boolean; ws_port?: number; error?: string; message?: string; log?: unknown } | null = null;
-        try {
-          const res = await fetch(`${base}/api/questcast/status`);
-          status = await res.json();
-        } catch (err) {
-          logLine(`status poll failed (transient): ${err instanceof Error ? err.message : String(err)}`);
-        }
-        if (status) {
-          drainBackendLog(status);
-          logLine(`status: state=${status.state ?? '?'} running=${status.running ?? '?'} ws_port=${status.ws_port ?? '?'}`);
-          if (status.state === 'error' || status.error) {
-            // Surface the cause (adb/scrcpy/no-device) but keep retrying so the
-            // feed self-heals the moment the headset is plugged in / authorized,
-            // instead of stranding the user on an error until they refresh.
-            const msg = status.error || status.message || 'Quest relay reported an error.';
-            patch({ state: 'error', error: msg });
-            logLine(`relay error: ${msg}`);
-            scheduleReconnect('relay error');
-            return;
-          }
-          const ready = status.state === 'ready' && typeof status.ws_port === 'number';
-          if (ready && status.ws_port) {
-            connect(status.ws_port);
-            // Keep draining backend log (packet-stats etc.) while live.
-            logPoll = setInterval(async () => {
-              if (closed) return;
-              try {
-                const r = await fetch(`${base}/api/questcast/status`);
-                drainBackendLog(await r.json());
-              } catch {
-                /* ignore */
-              }
-            }, 2000);
-            return;
-          }
-        }
-        await sleep(600);
-      }
-      // Cold start (scrcpy spawn + adb authorize + first keyframe) can exceed
-      // this budget. Don't dead-end on the first miss — the relay keeps coming
-      // up in the background, so retry on a backoff until it reports ready. This
-      // is what removes the "had to refresh a few times" behaviour.
-      if (!closed) {
-        logLine('relay not ready within 30s yet; will keep retrying in the background');
-        scheduleReconnect('relay not ready in 30s');
-      }
+      connect();
     };
 
-    // Watchdog: when the feed is visible but frames stop arriving (the Quest
-    // slept / display turned off -> scrcpy video-ended), recover on our own so
-    // the user never has to refresh or toggle. While the tab is hidden we drop
-    // packets on purpose, so we only count a stall when visible.
+    // Watchdog: when the feed is visible but frames stop arriving, recover.
     const STALL_MS = 5000;
     watchdog = setInterval(() => {
       if (closed || (typeof document !== 'undefined' && document.hidden)) return;
       if (!socket || socket.readyState !== WebSocket.OPEN) return;
+      // Open WS but never live yet = idle waiting for the Quest to start pushing;
+      // the same socket will deliver frames the moment it does, so don't reconnect.
+      if (!everLive) return;
       if (performance.now() - lastFrameAt > STALL_MS) {
         logLine('feed stalled (no frames for 5s), recovering');
         scheduleReconnect('stall');
       }
     }, 2000);
 
-    // Coming back from sleep / tab-switch: recover immediately if stale.
     const onVisible = () => {
       if (closed || document.hidden) return;
-      if (performance.now() - lastFrameAt > 3000) {
-        logLine('tab visible again, refreshing the Quest feed');
+      // Only recover a feed that was actually live; if it never started, the open
+      // socket is already waiting and will deliver whenever the Quest connects.
+      if (everLive && performance.now() - lastFrameAt > 3000) {
+        logLine('tab visible again, refreshing the Quest stitch feed');
         scheduleReconnect('wake');
       }
     };
@@ -481,8 +383,7 @@ export function useQuestCast(enabled: boolean, view: QuestView = 'full'): QuestC
 
     return () => {
       closed = true;
-      logLine('QUEST source disabled, tearing down WebSocket + decoder');
-      if (logPoll) clearInterval(logPoll);
+      logLine('QUEST STITCH source disabled, tearing down WebSocket + decoder');
       if (watchdog) clearInterval(watchdog);
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (typeof document !== 'undefined') {
