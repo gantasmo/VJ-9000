@@ -24,10 +24,12 @@ export interface VJState {
   sourceBlend?: number;
   /** Live-camera sub-source: a real capture device, a screen/window grabbed
    *  via getDisplayMedia, 'quest' — the direct theDAW QuestCast ADB/scrcpy
-   *  relay decoded in-app with WebCodecs, or 'cymatics' — theDAW's reflective
-   *  black-chrome cymatics visual rendered as a generative source. 'screen'
-   *  remains as the fallback window-capture path. */
-  cameraSource?: 'device' | 'screen' | 'quest' | 'cymatics';
+   *  relay (the whole headset display) decoded in-app with WebCodecs,
+   *  'queststitch' — the CLEAN stitched Quest passthrough streamed on its own
+   *  (questStitch backend module, same WebCodecs decode), or 'cymatics' —
+   *  theDAW's reflective black-chrome cymatics visual rendered as a generative
+   *  source. 'screen' remains as the fallback window-capture path. */
+  cameraSource?: 'device' | 'screen' | 'quest' | 'queststitch' | 'cymatics';
   /** Active Cymatics mode when cameraSource==='cymatics'. */
   cymaticsMode?: 'orb' | 'cymatics' | 'landscape-chrome' | 'landscape-ferrofluid';
   /** Quest stereo-mirror crop: full SBS frame, or one eye cropped to 16:9. */

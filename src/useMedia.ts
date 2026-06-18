@@ -58,7 +58,7 @@ function describeMediaError(err: unknown, mode: 'device' | 'screen'): string {
 export function useMedia(
   sourceType: 'camera' | 'clip',
   clipUrl: string | null,
-  cameraSource: 'device' | 'screen' | 'quest' | 'cymatics' = 'device',
+  cameraSource: 'device' | 'screen' | 'quest' | 'queststitch' | 'cymatics' = 'device',
   cameraDeviceId?: string | null,
   cameraReinit = 0,
   /** Live MediaStream for the direct Quest source (canvas-captured WebCodecs
@@ -68,6 +68,9 @@ export function useMedia(
   /** Live MediaStream for the Cymatics generative source (canvas-captured
    *  Three.js feed from useCymatics). Caller-owned, same binding contract. */
   cymaticsStream: MediaStream | null = null,
+  /** Live MediaStream for the clean Quest STITCH source (canvas-captured
+   *  WebCodecs feed from useQuestStitch). Caller-owned, same binding contract. */
+  stitchStream: MediaStream | null = null,
 ) {
   const cameraVideoRef = useRef<HTMLVideoElement>(null);
   const clipVideoRef = useRef<HTMLVideoElement>(null);
@@ -128,8 +131,13 @@ export function useMedia(
       // Generative sources (Quest relay / Cymatics): bind the caller-owned
       // canvas-captured stream. We don't own these (useQuestCast / useCymatics
       // do), so we never stop their tracks here.
-      if (cameraSource === 'quest' || cameraSource === 'cymatics') {
-        const genStream = cameraSource === 'quest' ? questStream : cymaticsStream;
+      if (cameraSource === 'quest' || cameraSource === 'queststitch' || cameraSource === 'cymatics') {
+        const genStream =
+          cameraSource === 'quest'
+            ? questStream
+            : cameraSource === 'queststitch'
+            ? stitchStream
+            : cymaticsStream;
         // Drop any live getUserMedia/getDisplayMedia pipe we still hold.
         if (streamRef.current) {
           streamRef.current.getTracks().forEach((t) => t.stop());
@@ -139,25 +147,41 @@ export function useMedia(
         if (!genStream) {
           // Source not ready yet — show initializing, retry when it lands.
           camVideo.srcObject = null;
+          camVideo.onloadeddata = null;
           if (active) {
             setError(null);
             setIsInitializing(true);
           }
           return;
         }
+        const label = cameraSource;
+        // Re-assert play() instead of tying it to the one-time bind. The capture
+        // stream gets bound to camVideo BEFORE the relay/canvas has drawn its first
+        // frame; that single early play() then never renders the frames that arrive
+        // later, and because the bind was guarded nothing re-triggered it — the main
+        // output stayed black while the right-panel preview (its own freshly-mounted
+        // element) showed the feed, until a Master Reset / source re-pick forced a
+        // re-bind. ensurePlay() + a loadeddata hook make the main output pick up the
+        // stream on its own, with no reset needed.
+        const ensurePlay = () => {
+          if (!camVideo.paused) return; // already rendering — don't interrupt it
+          camVideo.play()
+            .then(() => console.info(`[${label}] useMedia: camVideo.play() ok`))
+            .catch((e) => {
+              if (active && !isBenignPlayInterruption(e)) setError(e?.message ?? String(e));
+            });
+        };
         if (camVideo.srcObject !== genStream) {
           const t = genStream.getVideoTracks()[0];
           // eslint-disable-next-line no-console
-          console.info(`[${cameraSource}] useMedia: binding stream to camVideo —`,
+          console.info(`[${label}] useMedia: binding stream to camVideo —`,
             t ? `track state=${t.readyState} enabled=${t.enabled}` : 'NO video track');
           camVideo.srcObject = genStream;
-          camVideo.play()
-            .then(() => console.info(`[${cameraSource}] useMedia: camVideo.play() ok`))
-            .catch((e) => {
-              console.warn(`[${cameraSource}] useMedia: camVideo.play() failed —`, e?.message ?? e);
-              if (active && !isBenignPlayInterruption(e)) setError(e?.message ?? String(e));
-            });
         }
+        ensurePlay();
+        // First frame decodable -> guarantee we're actually rendering it even if the
+        // initial play() landed while the stream was still frameless.
+        camVideo.onloadeddata = ensurePlay;
         if (active) {
           setError(null);
           setIsInitializing(false);
@@ -169,6 +193,7 @@ export function useMedia(
       // The "want key" captures the requested live source so a switch between
       // a capture device and screen-grab (or a re-pick) drops the old stream.
       camVideo.onerror = null;
+      camVideo.onloadeddata = null; // drop the generative-source recovery hook
       const wantKey = `${cameraSource}:${cameraDeviceId ?? ''}:${cameraReinit}`;
       if (streamRef.current) {
         const tracks = streamRef.current.getTracks();
@@ -240,7 +265,7 @@ export function useMedia(
     return () => {
       active = false;
     };
-  }, [sourceType, clipUrl, cameraSource, cameraDeviceId, cameraReinit, questStream, cymaticsStream]);
+  }, [sourceType, clipUrl, cameraSource, cameraDeviceId, cameraReinit, questStream, cymaticsStream, stitchStream]);
 
   useEffect(() => {
     activeVideoRef.current = sourceType === 'clip' ? clipVideoRef.current : cameraVideoRef.current;
