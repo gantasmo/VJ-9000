@@ -45,6 +45,10 @@ interface MidiPanelProps {
   /** Last raw CC seen — shown in learn mode so the user can verify
    *  their knob is reaching the browser. */
   lastSeenCc: { cc: number; value: number; channel: number } | null;
+  /** Controlled open state. The host (SA3 VJ header) opens this over the
+   *  postMessage bridge; standalone, the floating pill toggles it. */
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
 }
 
 export const MidiPanel: React.FC<MidiPanelProps> = ({
@@ -58,9 +62,14 @@ export const MidiPanel: React.FC<MidiPanelProps> = ({
   setMapping,
   resetMappings,
   lastSeenCc,
+  open,
+  onOpenChange,
 }) => {
-  const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<'midi' | 'audio'>('midi');
+  // Running inside SA3's iframe? Then the floating canvas pill is hidden and the
+  // panel opens only from the host header (the button moved "up" there). When
+  // standalone, the pill stays as the local entry point.
+  const embedded = typeof window !== 'undefined' && window.parent !== window;
   // Mirror the audio-route store into local state so the panel
   // re-renders when a band/amount changes (the store is framework-free).
   const [routes, setRoutes] = useState<AudioRoutes>(() => getAudioRoutes());
@@ -80,12 +89,14 @@ export const MidiPanel: React.FC<MidiPanelProps> = ({
     ? { label: 'No controller', cls: 'border-zinc-700 text-zinc-500', dot: 'bg-zinc-700' }
     : { label: `${connectedCount} connected`, cls: 'border-cyan-500/40 bg-cyan-500/10 text-cyan-200', dot: 'bg-cyan-400 animate-pulse' };
 
-  // Pill (collapsed state) — top-right corner. Clicking opens panel.
+  // Pill (collapsed state) — top-right corner. Clicking opens panel. Hidden when
+  // embedded in SA3 (the host header owns the open action there).
   if (!open) {
+    if (embedded) return null;
     return (
       <button
         type="button"
-        onClick={() => setOpen(true)}
+        onClick={() => onOpenChange(true)}
         className={`absolute top-2 right-32 z-50 flex items-center gap-1.5 px-2 py-1 rounded border text-[9px] font-mono uppercase tracking-widest ${status.cls}`}
         title={`MIDI · ${status.label}`}
       >
@@ -104,7 +115,7 @@ export const MidiPanel: React.FC<MidiPanelProps> = ({
           <Music2 className="w-3.5 h-3.5 text-cyan-300" />
           <span className="font-black uppercase tracking-widest text-cyan-200">MIDI Mapper</span>
         </div>
-        <button onClick={() => setOpen(false)} className="p-1 text-zinc-500 hover:text-white">
+        <button onClick={() => onOpenChange(false)} className="p-1 text-zinc-500 hover:text-white" aria-label="Close MIDI mapper">
           <X className="w-3 h-3" />
         </button>
       </div>

@@ -42,15 +42,23 @@ export interface AudioRoute {
 
 export type AudioRoutes = Partial<Record<NumericVJField, AudioRoute>>;
 
-const STORAGE_KEY = 'vj-audio-routes:v1';
+// Routes persist PER CONTROLLER (mirroring useMidi's per-device mappings) so each
+// device reloads its own audio-react setup. The base key is the legacy global
+// bucket: a no-controller fallback and the migration seed for the first device.
+const ROUTE_PREFIX = 'vj-audio-routes:v1';
+const storageKeyFor = (ctrl: string | null): string => (ctrl ? `${ROUTE_PREFIX}::${ctrl}` : ROUTE_PREFIX);
 
-let routes: AudioRoutes = loadRoutes();
+let activeController: string | null = null;
+let routes: AudioRoutes = loadRoutes(activeController);
 const listeners = new Set<(r: AudioRoutes) => void>();
 
-function loadRoutes(): AudioRoutes {
+function loadRoutes(ctrl: string | null): AudioRoutes {
   if (typeof window === 'undefined') return {};
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    let raw = window.localStorage.getItem(storageKeyFor(ctrl));
+    // Migration: first time we see a device, inherit the legacy global routes (if
+    // any). Non-destructive — the legacy bucket stays; this device gets its copy.
+    if (!raw && ctrl) raw = window.localStorage.getItem(ROUTE_PREFIX);
     if (!raw) return {};
     const parsed = JSON.parse(raw) as AudioRoutes;
     const out: AudioRoutes = {};
@@ -71,10 +79,19 @@ function loadRoutes(): AudioRoutes {
 function persist() {
   if (typeof window === 'undefined') return;
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(routes));
+    window.localStorage.setItem(storageKeyFor(activeController), JSON.stringify(routes));
   } catch {
     /* quota / private mode — ignore */
   }
+}
+
+/** Switch the active controller: reload that device's saved routes and notify.
+ *  Called from App whenever useMidi's detected controller changes. */
+export function setActiveAudioController(ctrl: string | null): void {
+  if (ctrl === activeController) return;
+  activeController = ctrl;
+  routes = loadRoutes(ctrl);
+  emit();
 }
 
 function emit() {
