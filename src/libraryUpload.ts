@@ -33,6 +33,35 @@ export function backendBase(): string {
   return `${window.location.protocol}//${window.location.hostname}:8600`;
 }
 
+/**
+ * WebSocket base for backend relays (e.g. the akvj point-cloud viewer).
+ *
+ * The Vite dev proxy forwards HTTP `/api` fine but does NOT reliably forward
+ * `/api` WebSocket UPGRADES — the upgrade hangs and the socket never opens. So
+ * connect WebSockets to the backend DIRECTLY (CORS is open with allow_origins=*).
+ * In dev the `?api=` origin is the frontend dev server (5173) whose backend is on
+ * :8600; in production the `?api=` origin IS the backend, so use it as-is. This
+ * mirrors how the Quest sources connect straight to their relay ports rather than
+ * through the frontend proxy.
+ */
+export function backendWsBase(): string {
+  const http = backendBase();
+  try {
+    const u = new URL(http);
+    const wsProto = u.protocol === 'https:' ? 'wss:' : 'ws:';
+    // Frontend dev-server origins → the backend is the same host on :8600. Map a
+    // 'localhost' hostname to 127.0.0.1: the backend binds 0.0.0.0 (IPv4), and on
+    // Windows 'localhost' can resolve to ::1 (IPv6) first and stall the upgrade.
+    if (u.port === '5173' || u.port === '5187') {
+      const host = u.hostname === 'localhost' ? '127.0.0.1' : u.hostname;
+      return `${wsProto}//${host}:8600`;
+    }
+    return `${wsProto}//${u.host}`;
+  } catch {
+    return http.replace(/^http/, 'ws');
+  }
+}
+
 /** True when a URL is already a stable (non-blob) http(s) URL. */
 export function isStableUrl(url: string | null | undefined): boolean {
   return !!url && !url.startsWith('blob:') && !url.startsWith('data:');

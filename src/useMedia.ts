@@ -58,7 +58,7 @@ function describeMediaError(err: unknown, mode: 'device' | 'screen'): string {
 export function useMedia(
   sourceType: 'camera' | 'clip',
   clipUrl: string | null,
-  cameraSource: 'device' | 'screen' | 'quest' | 'queststitch' | 'cymatics' = 'device',
+  cameraSource: 'device' | 'screen' | 'quest' | 'queststitch' | 'cymatics' | 'akvj' | 'akvj3d' | 'depthcloud' = 'device',
   cameraDeviceId?: string | null,
   cameraReinit = 0,
   /** Live MediaStream for the direct Quest source (canvas-captured WebCodecs
@@ -71,6 +71,15 @@ export function useMedia(
   /** Live MediaStream for the clean Quest STITCH source (canvas-captured
    *  WebCodecs feed from useQuestStitch). Caller-owned, same binding contract. */
   stitchStream: MediaStream | null = null,
+  /** Live MediaStream for the AKVJ source (canvas-captured MJPEG feed from
+   *  useAkvj — a Unity desktop visual). Caller-owned, same binding contract. */
+  akvjStream: MediaStream | null = null,
+  /** Live MediaStream for the native Kinect point cloud (canvas-captured three.js
+   *  feed from useAkvj3d). Caller-owned, same binding contract. */
+  akvj3dStream: MediaStream | null = null,
+  /** Live MediaStream for the monocular-depth point cloud (canvas-captured three.js
+   *  feed from useDepthCloud). Caller-owned, same binding contract. */
+  depthCloudStream: MediaStream | null = null,
 ) {
   const cameraVideoRef = useRef<HTMLVideoElement>(null);
   const clipVideoRef = useRef<HTMLVideoElement>(null);
@@ -131,12 +140,18 @@ export function useMedia(
       // Generative sources (Quest relay / Cymatics): bind the caller-owned
       // canvas-captured stream. We don't own these (useQuestCast / useCymatics
       // do), so we never stop their tracks here.
-      if (cameraSource === 'quest' || cameraSource === 'queststitch' || cameraSource === 'cymatics') {
+      if (cameraSource === 'quest' || cameraSource === 'queststitch' || cameraSource === 'cymatics' || cameraSource === 'akvj' || cameraSource === 'akvj3d' || cameraSource === 'depthcloud') {
         const genStream =
           cameraSource === 'quest'
             ? questStream
             : cameraSource === 'queststitch'
             ? stitchStream
+            : cameraSource === 'akvj'
+            ? akvjStream
+            : cameraSource === 'akvj3d'
+            ? akvj3dStream
+            : cameraSource === 'depthcloud'
+            ? depthCloudStream
             : cymaticsStream;
         // Drop any live getUserMedia/getDisplayMedia pipe we still hold.
         if (streamRef.current) {
@@ -265,7 +280,7 @@ export function useMedia(
     return () => {
       active = false;
     };
-  }, [sourceType, clipUrl, cameraSource, cameraDeviceId, cameraReinit, questStream, cymaticsStream, stitchStream]);
+  }, [sourceType, clipUrl, cameraSource, cameraDeviceId, cameraReinit, questStream, cymaticsStream, stitchStream, akvjStream, akvj3dStream, depthCloudStream]);
 
   useEffect(() => {
     activeVideoRef.current = sourceType === 'clip' ? clipVideoRef.current : cameraVideoRef.current;

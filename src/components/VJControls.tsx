@@ -3,6 +3,7 @@ import { VJState, DEFAULT_VJ_STATE } from '../types';
 import { Activity, RefreshCcw, Upload, Sliders, Cpu, Radio, Hash, Video, LayoutPanelLeft, Columns, Monitor, Maximize, FolderOpen, Tv2 } from 'lucide-react';
 import { PluginsPanel } from './PluginsPanel';
 import { backendBase } from '../libraryUpload';
+import { AKVJ_STYLES } from '../akvj/AkvjCloudRenderer';
 
 const AUTOPILOT_EFFECTS = [
   { key: 'feedback', label: 'Feedback Wash' },
@@ -51,6 +52,25 @@ interface ControlsProps {
   stitchError?: string | null;
   stitchFps?: number;
   stitchLog?: string[];
+  /** AKVJ (Unity desktop visual) feed status (from useAkvj in App). */
+  akvjState?: 'idle' | 'connecting' | 'waiting' | 'live' | 'error';
+  akvjError?: string | null;
+  akvjFps?: number;
+  akvjLog?: string[];
+  akvj3dState?: 'idle' | 'connecting' | 'waiting' | 'live' | 'error';
+  akvj3dError?: string | null;
+  akvj3dFps?: number;
+  akvj3dLog?: string[];
+  /** Sensor-side sidecar state + human label (polled from /api/akvj/sidecar). */
+  akvj3dSensorState?: string;
+  akvj3dSensorLabel?: string;
+  /** Monocular-depth ("depthcloud") source status. */
+  depthState?: 'idle' | 'loading-model' | 'ready' | 'running' | 'error';
+  depthBackend?: string | null;
+  depthProgress?: number;
+  depthFps?: number;
+  depthError?: string | null;
+  depthLog?: string[];
 }
 
 /** Scrollable QuestCast diagnostics log — the whole pipeline (frontend +
@@ -130,7 +150,7 @@ const QuestLogPanel: React.FC<{ log: string[] }> = ({ log }) => {
 // Memoized so the deck only re-renders when its props actually change — not
 // every time the parent App re-renders for an unrelated reason. updateState is
 // stabilized with useCallback in App so this memo bites.
-function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState = 'idle', questError = null, questFps = 0, questLog = [], stitchState = 'idle', stitchError = null, stitchFps = 0, stitchLog = [] }: ControlsProps) {
+function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState = 'idle', questError = null, questFps = 0, questLog = [], stitchState = 'idle', stitchError = null, stitchFps = 0, stitchLog = [], akvjState = 'idle', akvjError = null, akvjFps = 0, akvjLog = [], akvj3dState = 'idle', akvj3dError = null, akvj3dFps = 0, akvj3dLog = [], akvj3dSensorState = 'unknown', akvj3dSensorLabel = 'checking sensor…', depthState = 'idle', depthBackend = null, depthProgress = 0, depthFps = 0, depthError = null, depthLog = [] }: ControlsProps) {
   const [showWeights, setShowWeights] = useState(true);
   const [showApDynamics, setShowApDynamics] = useState(false);
   const [showExportFolder, setShowExportFolder] = useState(false);
@@ -539,6 +559,33 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
                 })}
                 highlight="purple"
               />
+              {/* AKVJ (Unity Akvfx MJPEG) source retired from the UI — the native
+                  KINECT source below renders the Azure-Kinect point cloud directly
+                  in three.js with no Unity. The relay still accepts MJPEG sources,
+                  so this chip can be restored if the maximal-look Unity path is
+                  ever wanted again. */}
+              <TogglePad
+                label="KINECT"
+                active={state.cameraSource === 'akvj3d'}
+                onClick={() => updateState({
+                  sourceType: 'camera',
+                  sourceBlend: 0,
+                  cameraSource: 'akvj3d',
+                  cameraReinit: (state.cameraReinit ?? 0) + 1,
+                })}
+                highlight="purple"
+              />
+              <TogglePad
+                label="DEPTH"
+                active={state.cameraSource === 'depthcloud'}
+                onClick={() => updateState({
+                  sourceType: 'camera',
+                  sourceBlend: 0,
+                  cameraSource: 'depthcloud',
+                  cameraReinit: (state.cameraReinit ?? 0) + 1,
+                })}
+                highlight="purple"
+              />
             </div>
             {(state.cameraSource ?? 'device') === 'device' && (
               <div className="flex flex-col gap-1">
@@ -673,6 +720,182 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
                   Reflective black-chrome visual, audio-reactive. Mix it against a clip with the CAM↔MEM crossfader; all DECK effects apply.
                 </p>
               </div>
+            )}
+            {state.cameraSource === 'akvj' && (
+              <div
+                className={`flex items-center justify-between gap-2 px-2 py-1.5 rounded border text-[9px] font-mono uppercase tracking-widest ${
+                  akvjState === 'live'
+                    ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-200'
+                    : akvjState === 'error'
+                    ? 'border-rose-500/50 bg-rose-500/10 text-rose-200'
+                    : 'border-zinc-700 text-zinc-400'
+                }`}
+              >
+                <span>AKVJ</span>
+                <span>
+                  {akvjState === 'live'
+                    ? `live ${akvjFps}fps`
+                    : akvjState === 'error'
+                    ? 'error'
+                    : akvjState === 'waiting'
+                    ? 'waiting for app…'
+                    : `${akvjState}…`}
+                </span>
+              </div>
+            )}
+            {state.cameraSource === 'akvj' && (
+              <p className="text-[8px] font-mono text-zinc-600 leading-snug">
+                A Unity desktop visual (e.g. the Azure-Kinect depth VFX app) streamed in over the akvj bridge. Run the app with GantasmoAkvjStreamer; it auto-connects. Mix it with the CAM↔MEM crossfader; all DECK effects apply.
+              </p>
+            )}
+            {state.cameraSource === 'akvj' && akvjError && (
+              <p className="text-[8px] font-mono text-rose-300/80 leading-snug">{akvjError}</p>
+            )}
+            {state.cameraSource === 'akvj' && (
+              <QuestLogPanel log={akvjLog} />
+            )}
+            {state.cameraSource === 'akvj3d' && (
+              <>
+                {/* SENSOR row — the real "is it Kinected" indicator (sidecar state). */}
+                <div
+                  className={`flex items-center justify-between gap-2 px-2 py-1.5 rounded border text-[9px] font-mono uppercase tracking-widest ${
+                    akvj3dSensorState === 'streaming'
+                      ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-200'
+                      : akvj3dSensorState === 'error'
+                      ? 'border-rose-500/50 bg-rose-500/10 text-rose-200'
+                      : akvj3dSensorState === 'stopped' || akvj3dSensorState === 'unknown'
+                      ? 'border-zinc-700 text-zinc-400'
+                      : 'border-amber-500/50 bg-amber-500/10 text-amber-200'
+                  }`}
+                >
+                  <span>{akvj3dSensorState === 'streaming' ? 'KINECTED' : 'SENSOR'}</span>
+                  <span className="normal-case tracking-normal text-right">{akvj3dSensorLabel}</span>
+                </div>
+                {/* VIEW row — the browser's render/stream side. */}
+                <div className="flex items-center justify-between gap-2 px-2 py-1 rounded border border-zinc-800 text-[8px] font-mono uppercase tracking-widest text-zinc-500">
+                  <span>VIEW</span>
+                  <span className="normal-case tracking-normal">
+                    {akvj3dState === 'live'
+                      ? `rendering ${akvj3dFps}fps`
+                      : akvj3dState === 'error'
+                      ? 'error'
+                      : akvj3dState === 'waiting'
+                      ? 'waiting for first frame…'
+                      : `${akvj3dState}…`}
+                  </span>
+                </div>
+                <p className="text-[8px] font-mono text-zinc-600 leading-snug">
+                  Native Azure-Kinect point cloud, no Unity: theDAW spawns a headless capture sidecar, the cloud renders here in three.js, so all DECK effects and the CAM↔MEM crossfader apply to the live geometry. First connect builds a one-time point map (a few seconds).
+                </p>
+                {akvj3dError && (
+                  <p className="text-[8px] font-mono text-rose-300/80 leading-snug">{akvj3dError}</p>
+                )}
+                <QuestLogPanel log={akvj3dLog} />
+              </>
+            )}
+            {state.cameraSource === 'depthcloud' && (
+              <>
+                <div
+                  className={`flex items-center justify-between gap-2 px-2 py-1.5 rounded border text-[9px] font-mono uppercase tracking-widest ${
+                    depthState === 'running'
+                      ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-200'
+                      : depthState === 'error'
+                      ? 'border-rose-500/50 bg-rose-500/10 text-rose-200'
+                      : 'border-amber-500/50 bg-amber-500/10 text-amber-200'
+                  }`}
+                >
+                  <span>{depthState === 'running' ? 'DEPTH' : 'MODEL'}</span>
+                  <span className="normal-case tracking-normal text-right">
+                    {depthState === 'running'
+                      ? `live ${depthFps}fps${depthBackend ? ' · ' + depthBackend : ''}`
+                      : depthState === 'loading-model'
+                      ? `loading model ${depthProgress}%`
+                      : depthState === 'error'
+                      ? 'error'
+                      : `${depthState}…`}
+                  </span>
+                </div>
+                <p className="text-[8px] font-mono text-zinc-600 leading-snug">
+                  Monocular depth: the loaded clip (or the webcam if none) becomes a live point cloud via an in-browser AI depth model — no depth camera. First use downloads a ~50MB model once. Depth is relative, so it is a stylized look. All STYLE looks + audio reactivity apply.
+                </p>
+                <div className="space-y-1">
+                  <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">Depth engine — precision (AUTO=GPU fp16, Q8=lowest memory)</span>
+                  <div className="grid grid-cols-4 gap-1">
+                    {(['auto', 'fp16', 'q8', 'fp32'] as const).map((p) => (
+                      <TogglePad key={p} label={p.toUpperCase()} active={(state.depthPrecision ?? 'auto') === p} onClick={() => updateState({ depthPrecision: p })} highlight="purple" />
+                    ))}
+                  </div>
+                  <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">Resolution</span>
+                  <div className="grid grid-cols-3 gap-1">
+                    {([{ l: 'LOW', v: 256 }, { l: 'MED', v: 320 }, { l: 'HIGH', v: 448 }]).map((r) => (
+                      <TogglePad key={r.v} label={r.l} active={(state.depthRes ?? 320) === r.v} onClick={() => updateState({ depthRes: r.v })} highlight="purple" />
+                    ))}
+                  </div>
+                  <label htmlFor="depth-fps" className="block text-[8px] font-mono uppercase tracking-widest text-zinc-500">Inference FPS</label>
+                  <input
+                    id="depth-fps"
+                    name="depth-fps"
+                    type="range"
+                    min={2}
+                    max={24}
+                    step={1}
+                    value={state.depthFps ?? 8}
+                    onChange={(e) => updateState({ depthFps: parseFloat(e.target.value) })}
+                    className="w-full accent-purple-500"
+                  />
+                </div>
+                {depthError && (
+                  <p className="text-[8px] font-mono text-rose-300/80 leading-snug">{depthError}</p>
+                )}
+                <QuestLogPanel log={depthLog} />
+              </>
+            )}
+            {(state.cameraSource === 'akvj3d' || state.cameraSource === 'depthcloud') && (
+              <>
+                <div className="space-y-1">
+                  <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">Style</span>
+                  <div className="grid grid-cols-3 gap-1">
+                    {AKVJ_STYLES.map((s) => (
+                      <TogglePad
+                        key={s.key}
+                        label={s.label}
+                        active={(state.akvjMode ?? 'points') === s.key}
+                        onClick={() => updateState({ akvjMode: s.key })}
+                        highlight="purple"
+                      />
+                    ))}
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-x-2 gap-y-1">
+                  {([
+                    { id: 'akvj-speed', label: 'Speed', min: 0, max: 2, step: 0.01, value: state.akvjSpeed ?? 1, set: (v: number) => updateState({ akvjSpeed: v }) },
+                    { id: 'akvj-spin', label: 'Orbit ±', min: -1, max: 1, step: 0.01, value: state.akvjSpin ?? 0, set: (v: number) => updateState({ akvjSpin: v }) },
+                    { id: 'akvj-distance', label: 'Distance', min: 0.4, max: 2.5, step: 0.01, value: state.akvjDistance ?? 1, set: (v: number) => updateState({ akvjDistance: v }) },
+                    { id: 'akvj-size', label: 'Size', min: 0.2, max: 4, step: 0.01, value: state.akvjSize ?? 1, set: (v: number) => updateState({ akvjSize: v }) },
+                    { id: 'akvj-density', label: 'Amount', min: 0.05, max: 1, step: 0.01, value: state.akvjDensity ?? 1, set: (v: number) => updateState({ akvjDensity: v }) },
+                    { id: 'akvj-bright', label: 'Bright', min: 0, max: 2, step: 0.01, value: state.akvjBright ?? 1, set: (v: number) => updateState({ akvjBright: v }) },
+                    { id: 'akvj-bloom', label: 'Bloom', min: 0, max: 2, step: 0.01, value: state.akvjBloom ?? 0.5, set: (v: number) => updateState({ akvjBloom: v }) },
+                    { id: 'akvj-wind', label: 'Wind', min: 0, max: 1, step: 0.01, value: state.akvjWind ?? 0, set: (v: number) => updateState({ akvjWind: v }) },
+                    { id: 'akvj-trails', label: 'Trails', min: 0, max: 0.95, step: 0.01, value: state.akvjTrails ?? 0, set: (v: number) => updateState({ akvjTrails: v }) },
+                    { id: 'akvj-renderfps', label: 'Render FPS', min: 12, max: 60, step: 1, value: state.akvjRenderFps ?? 60, set: (v: number) => updateState({ akvjRenderFps: v }) },
+                  ]).map((c) => (
+                    <div key={c.id} className="space-y-0.5">
+                      <label htmlFor={c.id} className="block text-[8px] font-mono uppercase tracking-widest text-zinc-500">{c.label}</label>
+                      <input
+                        id={c.id}
+                        name={c.id}
+                        type="range"
+                        min={c.min}
+                        max={c.max}
+                        step={c.step}
+                        value={c.value}
+                        onChange={(e) => c.set(parseFloat(e.target.value))}
+                        className="w-full accent-purple-500"
+                      />
+                    </div>
+                  ))}
+                </div>
+              </>
             )}
           </div>
         )}

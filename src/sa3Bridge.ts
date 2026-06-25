@@ -86,6 +86,10 @@ const loadTrackListeners = new Set<(payload: ExternalLoadTrackPayload) => void>(
 // sourceType switch in App.tsx and echo the resulting state back so the host
 // button reflects reality (incl. a getUserMedia failure).
 const cameraListeners = new Set<(on: boolean) => void>();
+// Host (SA3 VJ toolbar) asks us to open the MIDI mapping panel. The mapper used
+// to live as a floating pill on the VJ canvas; embedded, it opens from the host
+// header instead.
+const openMidiMapListeners = new Set<() => void>();
 
 // ── Control sync (SLIDE tab ⇄ VJ controls) ─────────────────────────
 /** A single control change pushed FROM the host: set this VJState key to
@@ -195,8 +199,18 @@ if (typeof window !== 'undefined') {
       cameraListeners.forEach((cb) => {
         try { cb(on); } catch { /* defensive */ }
       });
+    } else if (data.type === 'sa3-vj/open-midi-map') {
+      openMidiMapListeners.forEach((cb) => {
+        try { cb(); } catch { /* defensive */ }
+      });
     }
   });
+}
+
+/** Subscribe to the host's "open the MIDI mapping panel" request. */
+export function subscribeToOpenMidiMap(cb: () => void): () => void {
+  openMidiMapListeners.add(cb);
+  return () => { openMidiMapListeners.delete(cb); };
 }
 
 /** Subscribe to host camera on/off requests. Returns an unsubscribe fn. */

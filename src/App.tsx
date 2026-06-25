@@ -4,6 +4,9 @@ import { useLibraryPool, type PoolItem } from './useLibraryPool';
 import { useMedia } from './useMedia';
 import { useQuestCast } from './useQuestCast';
 import { useQuestStitch } from './useQuestStitch';
+import { useAkvj } from './useAkvj';
+import { useAkvj3d } from './useAkvj3d';
+import { useDepthCloud } from './useDepthCloud';
 import { useCymatics } from './useCymatics';
 import { useAudioAnalyzer } from './useAudioAnalyzer';
 import { backendBase } from './libraryUpload';
@@ -24,6 +27,7 @@ import {
   subscribeToControlSet,
   subscribeToControlRequests,
   subscribeToCamera,
+  subscribeToOpenMidiMap,
   sendControlManifest,
   sendControlChanged,
   sendCameraState,
@@ -36,6 +40,7 @@ import {
   coerceControlValue,
   readControlValue,
 } from './controlManifest';
+import { setActiveAudioController } from './audioRouting';
 import { AlertTriangle, Film, X as XIcon, ChevronRight, ChevronLeft, PanelRightOpen, PanelRightClose } from 'lucide-react';
 
 const LOCAL_STORAGE_KEY = 'gantasmo_veejay_state_2';
@@ -85,6 +90,9 @@ export default function App() {
   const [vjState, setVjState] = useState<VJState>(() => loadSavedState());
   const [routerError, setRouterError] = useState<string | null>(null);
   const [lastSeenCc, setLastSeenCc] = useState<{ cc: number; value: number; channel: number } | null>(null);
+  // MIDI mapper open state — controlled here so the SA3 host header can open it
+  // over the postMessage bridge (the mapper "moved up" to the host toolbar).
+  const [midiPanelOpen, setMidiPanelOpen] = useState(false);
   const pendingSa3PlayRef = useRef<Window | null>(null);
   const clipResumeMapRef = useRef<Record<string, number>>({});
   // Right-hand control deck collapse (standard layout only). Lets the user
@@ -121,6 +129,48 @@ export default function App() {
     getAudioLevels,
   );
 
+  // AKVJ source — a Unity desktop visual (e.g. the Azure-Kinect depth VFX app)
+  // streamed in over the akvj backend bridge as MJPEG. Only boots while selected.
+  const akvjFeed = useAkvj(
+    vjState.sourceType === 'camera' && vjState.cameraSource === 'akvj',
+  );
+
+  // Native Kinect source — the headless pyk4a sidecar streams depth + colour and
+  // this renders the point cloud in three.js (no Unity). Auto-spawns the sidecar
+  // via POST /api/akvj/start while selected.
+  // Shared global cloud controls for KINECT + DEPTH (speed/orbit/size/density/
+  // brightness/bloom/wind/trails/distance).
+  const akvjParams = {
+    spin: vjState.akvjSpin ?? 0,
+    speed: vjState.akvjSpeed ?? 1,
+    size: vjState.akvjSize ?? 1,
+    density: vjState.akvjDensity ?? 1,
+    bright: vjState.akvjBright ?? 1,
+    bloom: vjState.akvjBloom ?? 0.5,
+    wind: vjState.akvjWind ?? 0,
+    trails: vjState.akvjTrails ?? 0,
+    distance: vjState.akvjDistance ?? 1,
+    renderFps: vjState.akvjRenderFps ?? 60,
+  };
+
+  const akvj3dFeed = useAkvj3d(
+    vjState.sourceType === 'camera' && vjState.cameraSource === 'akvj3d',
+    getAudioLevels,
+    vjState.akvjMode ?? 'points',
+    akvjParams,
+  );
+
+  // Monocular-depth source — turns the loaded clip (else the webcam) into a live
+  // point cloud via in-browser Depth-Anything, through the same renderer/styles.
+  const depthCloudFeed = useDepthCloud(
+    vjState.sourceType === 'camera' && vjState.cameraSource === 'depthcloud',
+    getAudioLevels,
+    vjState.akvjMode ?? 'points',
+    akvjParams,
+    vjState.clipUrl ?? null,
+    { precision: vjState.depthPrecision ?? 'auto', res: vjState.depthRes ?? 320, fps: vjState.depthFps ?? 8 },
+  );
+
   const { videoRef, cameraVideoRef, clipVideoRef, error, isInitializing } = useMedia(
     vjState.sourceType,
     vjState.clipUrl,
@@ -130,6 +180,9 @@ export default function App() {
     questFeed.stream,
     cymaticsFeed.stream,
     stitchFeed.stream,
+    akvjFeed.stream,
+    akvj3dFeed.stream,
+    depthCloudFeed.stream,
   );
 
   // SA3 → VJ playback commands. The PlayerFooter in SA3 sends
@@ -372,6 +425,10 @@ export default function App() {
     return () => { unsubSet(); unsubReq(); };
   }, []);
 
+  // SA3 host header → open the MIDI mapping panel (the mapper button moved "up"
+  // to the host toolbar; this opens the same panel over the bridge).
+  useEffect(() => subscribeToOpenMidiMap(() => setMidiPanelOpen(true)), []);
+
   // SA3 VJ toolbar → camera on/off. Flip the source between the live camera and
   // the clip/memory buffer (the CAM↔MEM crossfader's two ends).
   useEffect(() => {
@@ -443,6 +500,12 @@ export default function App() {
       setVjState((prev) => ({ ...prev, [key]: value }));
     },
   });
+
+  // Keep the audio-react routes in sync with the active controller, so the same
+  // device reloads BOTH its MIDI map (useMidi) and its audio-react config.
+  useEffect(() => {
+    setActiveAudioController(midi.activeController);
+  }, [midi.activeController]);
 
   useEffect(() => {
     try {
@@ -912,6 +975,8 @@ export default function App() {
           setMapping={midi.setMapping}
           resetMappings={midi.resetMappings}
           lastSeenCc={lastSeenCc}
+          open={midiPanelOpen}
+          onOpenChange={setMidiPanelOpen}
         />
 
         {isInitializing && (
@@ -1013,6 +1078,15 @@ export default function App() {
         {vjState.layoutMode === 'standard' && vjState.sourceType === 'camera' && vjState.cameraSource === 'cymatics' && cymaticsFeed.stream && (
           <SourcePreview stream={cymaticsFeed.stream} label="Cymatics" />
         )}
+        {vjState.layoutMode === 'standard' && vjState.sourceType === 'camera' && vjState.cameraSource === 'akvj' && akvjFeed.stream && (
+          <SourcePreview stream={akvjFeed.stream} label="AKVJ" />
+        )}
+        {vjState.layoutMode === 'standard' && vjState.sourceType === 'camera' && vjState.cameraSource === 'akvj3d' && akvj3dFeed.stream && (
+          <SourcePreview stream={akvj3dFeed.stream} label="KINECT" />
+        )}
+        {vjState.layoutMode === 'standard' && vjState.sourceType === 'camera' && vjState.cameraSource === 'depthcloud' && depthCloudFeed.stream && (
+          <SourcePreview stream={depthCloudFeed.stream} label="DEPTH" />
+        )}
         <ControlDeck
           state={vjState}
           updateState={updateState}
@@ -1026,6 +1100,22 @@ export default function App() {
           stitchError={stitchFeed.error}
           stitchFps={stitchFeed.fps}
           stitchLog={stitchFeed.log}
+          akvjState={akvjFeed.state}
+          akvjError={akvjFeed.error}
+          akvjFps={akvjFeed.fps}
+          akvjLog={akvjFeed.log}
+          akvj3dState={akvj3dFeed.state}
+          akvj3dError={akvj3dFeed.error}
+          akvj3dFps={akvj3dFeed.fps}
+          akvj3dLog={akvj3dFeed.log}
+          akvj3dSensorState={akvj3dFeed.sidecarState}
+          akvj3dSensorLabel={akvj3dFeed.sidecarLabel}
+          depthState={depthCloudFeed.state}
+          depthBackend={depthCloudFeed.backend}
+          depthProgress={depthCloudFeed.progress}
+          depthFps={depthCloudFeed.fps}
+          depthError={depthCloudFeed.error}
+          depthLog={depthCloudFeed.log}
         />
       </aside>
 

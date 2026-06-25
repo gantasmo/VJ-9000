@@ -6,6 +6,14 @@ import {defineConfig} from 'vite';
 export default defineConfig(() => {
   return {
     plugins: [react(), tailwindcss()],
+    optimizeDeps: {
+      // transformers.js (the monocular-depth "depthcloud" source) loads
+      // onnxruntime-web wasm/webgpu workers via import.meta.url relative to its
+      // own dist. Vite's dep pre-bundling rewrites those URLs and breaks the
+      // worker/wasm resolution; excluding it keeps them correct. It is only
+      // imported inside the depth Web Worker, so it stays out of the main bundle.
+      exclude: ['@huggingface/transformers'],
+    },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),

@@ -26,12 +26,38 @@ export interface VJState {
    *  via getDisplayMedia, 'quest' — the direct theDAW QuestCast ADB/scrcpy
    *  relay (the whole headset display) decoded in-app with WebCodecs,
    *  'queststitch' — the CLEAN stitched Quest passthrough streamed on its own
-   *  (questStitch backend module, same WebCodecs decode), or 'cymatics' —
+   *  (questStitch backend module, same WebCodecs decode), 'cymatics' —
    *  theDAW's reflective black-chrome cymatics visual rendered as a generative
-   *  source. 'screen' remains as the fallback window-capture path. */
-  cameraSource?: 'device' | 'screen' | 'quest' | 'queststitch' | 'cymatics';
+   *  source, or 'akvj' — a Unity desktop visual (e.g. the Azure-Kinect depth VFX
+   *  app) streamed in over the akvj backend bridge as MJPEG, or 'akvj3d' — the
+   *  native Azure-Kinect point cloud (the headless pyk4a sidecar streams depth +
+   *  colour and the VJ renders the cloud in three.js, no Unity). 'screen' remains
+   *  as the fallback window-capture path, or 'depthcloud' — ANY video (the loaded
+   *  clip, else the webcam) turned into a live point cloud via in-browser monocular
+   *  depth (no depth camera), rendered through the same AkvjCloudRenderer. */
+  cameraSource?: 'device' | 'screen' | 'quest' | 'queststitch' | 'cymatics' | 'akvj' | 'akvj3d' | 'depthcloud';
   /** Active Cymatics mode when cameraSource==='cymatics'. */
   cymaticsMode?: 'orb' | 'cymatics' | 'landscape-chrome' | 'landscape-ferrofluid';
+  /** Active particle style when cameraSource==='akvj3d' (the KINECT point cloud);
+   *  one of the AKVJ_STYLES keys (points/dust/flow/storm/glow/chrome/neon/
+   *  electric/ferro/confetti). */
+  akvjMode?: string;
+  /** KINECT/DEPTH cloud global controls (shared; see AkvjParams). akvjSpin is the
+   *  orbit speed: 0 freezes a face-on view, sign sets direction. */
+  akvjSpin?: number;
+  akvjSpeed?: number; // animation speed multiplier
+  akvjSize?: number; // particle size multiplier
+  akvjDensity?: number; // 0..1 fraction of points shown
+  akvjBright?: number; // brightness multiplier
+  akvjBloom?: number; // bloom strength
+  akvjWind?: number; // wind affector strength
+  akvjTrails?: number; // motion-trail (afterimage) amount
+  akvjDistance?: number; // camera distance multiplier
+  akvjRenderFps?: number; // render-loop cap (>=60 = uncapped)
+  /** DEPTH engine controls (the monocular-depth model). */
+  depthPrecision?: 'auto' | 'fp16' | 'q8' | 'fp32'; // model precision (OOM lever)
+  depthRes?: number; // cloud/inference width (256 / 320 / 448)
+  depthFps?: number; // inference rate
   /** Quest stereo-mirror crop: full SBS frame, or one eye cropped to 16:9. */
   questView?: 'full' | 'left' | 'right';
   /** Selected videoinput deviceId when cameraSource==='device' (the camera
@@ -236,6 +262,20 @@ export const DEFAULT_VJ_STATE: VJState = {
   sourceBlend: 0,
   cameraSource: 'device',
   cymaticsMode: 'orb',
+  akvjMode: 'points',
+  akvjSpin: 0,
+  akvjSpeed: 1,
+  akvjSize: 1,
+  akvjDensity: 1,
+  akvjBright: 1,
+  akvjBloom: 0.5,
+  akvjWind: 0,
+  akvjTrails: 0,
+  akvjDistance: 1,
+  akvjRenderFps: 60,
+  depthPrecision: 'auto',
+  depthRes: 320,
+  depthFps: 8,
   questView: 'full',
   cameraDeviceId: null,
   cameraReinit: 0,

@@ -70,20 +70,39 @@ interface UseMidiOpts {
   onParamChange?: (key: NumericVJField, value: number) => void;
 }
 
-const STORAGE_KEY = 'vj-midi-mappings:v1';
+// Mappings persist PER CONTROLLER so each connected device reloads its own learned
+// map. The base key is the legacy global bucket (kept as a no-controller fallback
+// and as the migration seed for the first device seen).
+const STORAGE_PREFIX = 'vj-midi-mappings:v1';
+const storageKeyFor = (ctrl: string | null): string => (ctrl ? `${STORAGE_PREFIX}::${ctrl}` : STORAGE_PREFIX);
 
-function loadMappings(): Record<NumericVJField, MidiMapping> {
+/** Stable per-controller key — the device name (preferred, so the same model
+ *  reloads its map across sessions even if the port id changes), else the id. */
+function controllerKey(info: { name?: string | null; id?: string | null }): string {
+  const raw = (info.name && info.name.trim()) || info.id || '';
+  return raw.replace(/\s+/g, ' ').trim().slice(0, 64);
+}
+
+/** Auto-map defaults so a fresh device shows something reasonable connected. */
+function seedDefaults(): Record<string, MidiMapping> {
   const out: Record<string, MidiMapping> = {};
-  // Seed with auto-map defaults so a fresh user sees something
-  // reasonable connected to their controller.
   for (const def of MIDI_PARAMS) {
     if (def.autoCc !== null) {
       out[def.key] = { kind: 'cc', number: def.autoCc, channel: null };
     }
   }
+  return out;
+}
+
+function loadMappings(ctrl: string | null): Record<NumericVJField, MidiMapping> {
+  const out: Record<string, MidiMapping> = seedDefaults();
   if (typeof window === 'undefined') return out as Record<NumericVJField, MidiMapping>;
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    let raw = window.localStorage.getItem(storageKeyFor(ctrl));
+    // Migration: first time we see a specific controller, inherit the legacy
+    // global map (if any) so an existing setup carries over. Non-destructive —
+    // the legacy bucket is left intact and this device gets its own copy on save.
+    if (!raw && ctrl) raw = window.localStorage.getItem(STORAGE_PREFIX);
     if (raw) {
       const parsed = JSON.parse(raw) as Record<string, MidiMapping>;
       for (const [k, v] of Object.entries(parsed)) {
@@ -98,10 +117,10 @@ function loadMappings(): Record<NumericVJField, MidiMapping> {
   return out as Record<NumericVJField, MidiMapping>;
 }
 
-function saveMappings(m: Record<NumericVJField, MidiMapping>) {
+function saveMappings(m: Record<NumericVJField, MidiMapping>, ctrl: string | null) {
   if (typeof window === 'undefined') return;
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(m));
+    window.localStorage.setItem(storageKeyFor(ctrl), JSON.stringify(m));
   } catch {
     /* quota / private mode — silently skip */
   }
@@ -112,8 +131,11 @@ export function useMidi(opts: UseMidiOpts = {}) {
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [inputs, setInputs] = useState<MidiInputInfo[]>([]);
+  // The active controller's stable key (name/id). null until a device is seen, or
+  // when none is connected — then the legacy global bucket is used.
+  const [activeController, setActiveController] = useState<string | null>(null);
   const [mappings, setMappings] = useState<Record<NumericVJField, MidiMapping>>(
-    () => loadMappings(),
+    () => loadMappings(null),
   );
   const [learning, setLearning] = useState<NumericVJField | null>(null);
 
@@ -125,11 +147,13 @@ export function useMidi(opts: UseMidiOpts = {}) {
   mappingsRef.current = mappings;
   const learningRef = useRef(learning);
   learningRef.current = learning;
+  const activeControllerRef = useRef(activeController);
+  activeControllerRef.current = activeController;
 
-  // Persist mappings whenever they change.
+  // Persist mappings under the active controller whenever either changes.
   useEffect(() => {
-    saveMappings(mappings);
-  }, [mappings]);
+    saveMappings(mappings, activeController);
+  }, [mappings, activeController]);
 
   // Acquire MIDI access + wire onmessage on every input.
   useEffect(() => {
@@ -217,6 +241,16 @@ export function useMidi(opts: UseMidiOpts = {}) {
         input.onmidimessage = onMessage;
       });
       setInputs(list);
+      // Active controller = the first connected device (else the first listed).
+      // When it changes, load that controller's saved map so the same device
+      // auto-restores its mappings; a fresh device starts from auto-defaults.
+      const primary = list.find((i) => i.state === 'connected') ?? list[0] ?? null;
+      const ctrl = primary ? controllerKey(primary) : null;
+      if (ctrl !== activeControllerRef.current) {
+        activeControllerRef.current = ctrl;
+        setActiveController(ctrl);
+        setMappings(loadMappings(ctrl));
+      }
     };
 
     (navigator as Navigator & { requestMIDIAccess: () => Promise<MIDIAccess> })
@@ -260,10 +294,13 @@ export function useMidi(opts: UseMidiOpts = {}) {
   }, []);
 
   const resetMappings = useCallback(() => {
+    const ctrl = activeControllerRef.current;
     if (typeof window !== 'undefined') {
-      window.localStorage.removeItem(STORAGE_KEY);
+      window.localStorage.removeItem(storageKeyFor(ctrl));
     }
-    setMappings(loadMappings());
+    // Pure auto-defaults (don't re-inherit the legacy global via loadMappings);
+    // the persist effect writes these back under the active controller.
+    setMappings(seedDefaults() as Record<NumericVJField, MidiMapping>);
   }, []);
 
   // SA3-bridge subscription: when running inside SA3's VJ iframe,
@@ -333,5 +370,8 @@ export function useMidi(opts: UseMidiOpts = {}) {
     learning,
     setLearning,
     resetMappings,
+    /** Stable key of the active controller (name/id), or null when none — drives
+     *  per-controller audio-route persistence in App (see setActiveAudioController). */
+    activeController,
   };
 }
