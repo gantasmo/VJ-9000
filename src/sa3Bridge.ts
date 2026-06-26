@@ -71,6 +71,8 @@ const LEVELS_STALE_MS = 200;
 
 let latestLevels: ExternalAudioLevels | null = null;
 let latestLevelsAt = 0;
+let latestSpectrum: Uint8Array | null = null;
+let latestSpectrumAt = 0;
 let latestMeta: ExternalTrackMeta | null = null;
 let latestInputs: ExternalInputState = { mic: true, audio: true, midi: true };
 // Whether the SA3 VJ tab is currently visible. Defaults true so the app
@@ -123,6 +125,14 @@ if (typeof window !== 'undefined') {
         volume: Number(data.volume) || 0,
       };
       latestLevelsAt = performance.now();
+      if (Array.isArray(data.spectrum)) {
+        const s = data.spectrum as number[];
+        if (!latestSpectrum || latestSpectrum.length !== s.length) {
+          latestSpectrum = new Uint8Array(s.length);
+        }
+        for (let i = 0; i < s.length; i++) latestSpectrum[i] = s[i] | 0;
+        latestSpectrumAt = performance.now();
+      }
     } else if (data.type === 'sa3-vj/track-meta') {
       latestMeta = {
         entryId: data.entryId ?? null,
@@ -257,6 +267,23 @@ export function sendControlChanged(key: string, value: number | boolean): void {
   postToHost({ type: 'sa3-vj/control-changed', key, value });
 }
 
+/** Six normalized (0..1) body-pose scalars from the VJ's MediaPipe gesture
+ *  detector. The host (theDAW) feeds these into its poseControlSource so a
+ *  gesture drives the same control bus DJ uses. */
+export interface PoseScalars {
+  handLeft: number;
+  handRight: number;
+  armSpan: number;
+  bodyX: number;
+  bodyY: number;
+  lean: number;
+}
+
+/** Forward the latest body-pose scalars to the host. No-op when standalone. */
+export function sendPose(p: PoseScalars): void {
+  postToHost({ type: 'sa3-vj/pose', ...p, t: performance.now() });
+}
+
 /** Post a message back to the SA3 host window (parent or opener). Falls back
  *  to window.parent when no host message has arrived yet. */
 function postToHost(payload: Record<string, unknown>): void {
@@ -326,6 +353,17 @@ export function getExternalLevels(): ExternalAudioLevels | null {
     return null;
   }
   return latestLevels;
+}
+
+/**
+ * Latest 128-bin frequency column forwarded by the SA3 host (downsampled from
+ * its master AnalyserNode), or null if stale / never sent. Lets the SPECTRA VJ
+ * source render a real spectrogram from SA3's playing audio with no mic.
+ */
+export function getExternalSpectrum(): Uint8Array | null {
+  if (!latestSpectrum) return null;
+  if (performance.now() - latestSpectrumAt > LEVELS_STALE_MS) return null;
+  return latestSpectrum;
 }
 
 /** Latest track metadata received from SA3, or null if none yet. */

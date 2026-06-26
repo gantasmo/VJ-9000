@@ -58,7 +58,7 @@ function describeMediaError(err: unknown, mode: 'device' | 'screen'): string {
 export function useMedia(
   sourceType: 'camera' | 'clip',
   clipUrl: string | null,
-  cameraSource: 'device' | 'screen' | 'quest' | 'queststitch' | 'cymatics' | 'akvj' | 'akvj3d' | 'depthcloud' = 'device',
+  cameraSource: 'device' | 'screen' | 'quest' | 'queststitch' | 'cymatics' | 'akvj' | 'akvj3d' | 'depthcloud' | 'spectra' | 'shader' | 'asciiline' = 'device',
   cameraDeviceId?: string | null,
   cameraReinit = 0,
   /** Live MediaStream for the direct Quest source (canvas-captured WebCodecs
@@ -80,6 +80,15 @@ export function useMedia(
   /** Live MediaStream for the monocular-depth point cloud (canvas-captured three.js
    *  feed from useDepthCloud). Caller-owned, same binding contract. */
   depthCloudStream: MediaStream | null = null,
+  /** Live MediaStream for the SPECTRA-RIDER spectrogram-terrain source
+   *  (canvas-captured three.js feed from useSpectra). Same binding contract. */
+  spectraStream: MediaStream | null = null,
+  /** Live MediaStream for the generic GLSL shader source (canvas-captured WebGL2
+   *  feed from useShader, seeded by yotta). Same binding contract. */
+  shaderStream: MediaStream | null = null,
+  /** Live MediaStream for the ASCII source (canvas-captured WebGL2 feed from
+   *  useAsciiline, the upstream frame re-rendered as glyphs). Same binding contract. */
+  asciilineStream: MediaStream | null = null,
 ) {
   const cameraVideoRef = useRef<HTMLVideoElement>(null);
   const clipVideoRef = useRef<HTMLVideoElement>(null);
@@ -140,7 +149,7 @@ export function useMedia(
       // Generative sources (Quest relay / Cymatics): bind the caller-owned
       // canvas-captured stream. We don't own these (useQuestCast / useCymatics
       // do), so we never stop their tracks here.
-      if (cameraSource === 'quest' || cameraSource === 'queststitch' || cameraSource === 'cymatics' || cameraSource === 'akvj' || cameraSource === 'akvj3d' || cameraSource === 'depthcloud') {
+      if (cameraSource === 'quest' || cameraSource === 'queststitch' || cameraSource === 'cymatics' || cameraSource === 'akvj' || cameraSource === 'akvj3d' || cameraSource === 'depthcloud' || cameraSource === 'spectra' || cameraSource === 'shader' || cameraSource === 'asciiline') {
         const genStream =
           cameraSource === 'quest'
             ? questStream
@@ -152,6 +161,12 @@ export function useMedia(
             ? akvj3dStream
             : cameraSource === 'depthcloud'
             ? depthCloudStream
+            : cameraSource === 'spectra'
+            ? spectraStream
+            : cameraSource === 'shader'
+            ? shaderStream
+            : cameraSource === 'asciiline'
+            ? asciilineStream
             : cymaticsStream;
         // Drop any live getUserMedia/getDisplayMedia pipe we still hold.
         if (streamRef.current) {
@@ -280,7 +295,7 @@ export function useMedia(
     return () => {
       active = false;
     };
-  }, [sourceType, clipUrl, cameraSource, cameraDeviceId, cameraReinit, questStream, cymaticsStream, stitchStream, akvjStream, akvj3dStream, depthCloudStream]);
+  }, [sourceType, clipUrl, cameraSource, cameraDeviceId, cameraReinit, questStream, cymaticsStream, stitchStream, akvjStream, akvj3dStream, depthCloudStream, spectraStream, shaderStream, asciilineStream]);
 
   useEffect(() => {
     activeVideoRef.current = sourceType === 'clip' ? clipVideoRef.current : cameraVideoRef.current;

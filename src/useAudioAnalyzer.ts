@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { getExternalLevels, getExternalInputs } from './sa3Bridge';
+import { getExternalLevels, getExternalInputs, getExternalSpectrum } from './sa3Bridge';
 
 export interface AudioLevels {
   bass: number;
@@ -11,6 +11,7 @@ export interface AudioLevels {
 export function useAudioAnalyzer(isActive: boolean) {
   const analyzerRef = useRef<AnalyserNode | null>(null);
   const dataArrayRef = useRef<Uint8Array | null>(null);
+  const spectrumArrayRef = useRef<Uint8Array | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
@@ -37,6 +38,7 @@ export function useAudioAnalyzer(isActive: boolean) {
 
           analyzerRef.current = analyzer;
           dataArrayRef.current = new Uint8Array(analyzer.frequencyBinCount);
+          spectrumArrayRef.current = new Uint8Array(analyzer.frequencyBinCount);
         })
         .catch(err => console.error("Audio routing failed. Please allow microphone access:", err));
     }
@@ -97,5 +99,21 @@ export function useAudioAnalyzer(isActive: boolean) {
     };
   };
 
-  return { getAudioLevels };
+  // Live frequency buffer for spectrum-driven sources (e.g. SPECTRA). Prefers the
+  // host-forwarded spectrum (SA3's master FFT) when embedded; falls back to the
+  // local mic analyser; null when neither is available (callers then synthesise a
+  // coarse spectrum from getAudioLevels()).
+  const getAudioSpectrum = (): Uint8Array | null => {
+    const inputs = getExternalInputs();
+    if (inputs.audio) {
+      const ext = getExternalSpectrum();
+      if (ext) return ext;
+    }
+    if (!inputs.mic) return null;
+    if (!analyzerRef.current || !spectrumArrayRef.current) return null;
+    analyzerRef.current.getByteFrequencyData(spectrumArrayRef.current);
+    return spectrumArrayRef.current;
+  };
+
+  return { getAudioLevels, getAudioSpectrum };
 }

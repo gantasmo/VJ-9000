@@ -8,6 +8,10 @@ import { useAkvj } from './useAkvj';
 import { useAkvj3d } from './useAkvj3d';
 import { useDepthCloud } from './useDepthCloud';
 import { useCymatics } from './useCymatics';
+import { useSpectra } from './useSpectra';
+import { useShader } from './useShader';
+import { useAsciiline } from './useAsciiline';
+import { useGesture } from './useGesture';
 import { useAudioAnalyzer } from './useAudioAnalyzer';
 import { backendBase } from './libraryUpload';
 import { useMidi } from './useMidi';
@@ -17,6 +21,7 @@ import { LibraryPool } from './components/LibraryPool';
 import { Waveform } from './components/Waveform';
 import { SourcePreview } from './components/SourcePreview';
 import { ControlDeck } from './components/VJControls';
+import { ResizeHandle } from './components/ResizeHandle';
 import { MidiPanel } from './components/MidiPanel';
 import { routeFiles, VJ_FILE_ACCEPT } from './fileRouter';
 import { uploadMediaToLibrary } from './libraryUpload';
@@ -41,7 +46,7 @@ import {
   readControlValue,
 } from './controlManifest';
 import { setActiveAudioController } from './audioRouting';
-import { AlertTriangle, Film, X as XIcon, ChevronRight, ChevronLeft, PanelRightOpen, PanelRightClose } from 'lucide-react';
+import { AlertTriangle, Film, X as XIcon, ChevronRight, ChevronLeft, PanelRightOpen, PanelRightClose, PanelLeftClose } from 'lucide-react';
 
 const LOCAL_STORAGE_KEY = 'gantasmo_veejay_state_2';
 
@@ -106,7 +111,7 @@ export default function App() {
   const hostWroteRef = useRef<Set<string>>(new Set());
   const lastSentRef = useRef<Record<string, number | boolean>>({});
 
-  const { getAudioLevels } = useAudioAnalyzer(vjState.audioReactive);
+  const { getAudioLevels, getAudioSpectrum } = useAudioAnalyzer(vjState.audioReactive);
 
   // Direct Quest source (ADB/scrcpy relay decoded in-app via WebCodecs). Only
   // boots while the user has the QUEST sub-source selected.
@@ -171,6 +176,54 @@ export default function App() {
     { precision: vjState.depthPrecision ?? 'auto', res: vjState.depthRes ?? 320, fps: vjState.depthFps ?? 8 },
   );
 
+  // SPECTRA-RIDER source — a 3D audio spectrogram-terrain visual, fed the VJ's
+  // own audio (a 128-bin spectrum when available, else the 4 master bands).
+  // Mixable through the CAM↔MEM crossfader + all effects like any other source.
+  const spectraSettings = {
+    sensitivity: vjState.spectraSensitivity ?? 1,
+    smoothing: vjState.spectraSmoothing ?? 0.65,
+    noiseGate: vjState.spectraNoiseGate ?? 0.06,
+    heightMulti: vjState.spectraHeight ?? 1,
+    energyImpact: vjState.spectraEnergy ?? 1,
+  };
+  const spectraFeed = useSpectra(
+    vjState.sourceType === 'camera' && vjState.cameraSource === 'spectra',
+    getAudioSpectrum,
+    getAudioLevels,
+    vjState.spectraMode ?? 'dynamic',
+    vjState.spectraTheme ?? 'mel-spectrogram',
+    spectraSettings,
+    vjState.spectraAutoRotate ?? true,
+  );
+
+  // Generic GLSL shader source — a fullscreen atzedent-style fragment shader
+  // (yotta seeds the library) rendered as a generative source, its camera scrub
+  // accelerated by the VJ's live audio energy. Mixable like any other source.
+  const shaderFeed = useShader(
+    vjState.sourceType === 'camera' && vjState.cameraSource === 'shader',
+    getAudioLevels,
+    vjState.shaderId ?? 'yotta',
+    vjState.shaderAudioDrive ?? 1,
+  );
+
+  // ASCII source — the upstream frame (loaded clip, else webcam) re-rendered as
+  // live GPU ASCII glyphs (a port of ASCILINE). Mixable like any other source.
+  const asciiSettings = {
+    cols: vjState.asciiCols ?? 160,
+    mono: vjState.asciiMono ?? false,
+    accent: vjState.asciiAccent ?? '#00ff41',
+  };
+  const asciilineFeed = useAsciiline(
+    vjState.sourceType === 'camera' && vjState.cameraSource === 'asciiline',
+    getAudioLevels,
+    vjState.clipUrl ?? null,
+    asciiSettings,
+  );
+
+  // Body-pose control: webcam MediaPipe pose -> six scalars forwarded to theDAW's
+  // control bus. Control data only (no stream), runs alongside any visual source.
+  useGesture(vjState.gestureControl ?? false);
+
   const { videoRef, cameraVideoRef, clipVideoRef, error, isInitializing } = useMedia(
     vjState.sourceType,
     vjState.clipUrl,
@@ -183,6 +236,9 @@ export default function App() {
     akvjFeed.stream,
     akvj3dFeed.stream,
     depthCloudFeed.stream,
+    spectraFeed.stream,
+    shaderFeed.stream,
+    asciilineFeed.stream,
   );
 
   // SA3 → VJ playback commands. The PlayerFooter in SA3 sends
@@ -835,6 +891,21 @@ export default function App() {
     }
   };
 
+  // Shared prop bundle so the deck can render twice in the 3-column shell (left
+  // 'composition' + right 'browser') without duplicating its long prop list.
+  const controlDeckProps = {
+    state: vjState,
+    updateState,
+    reset: resetState,
+    hasCameraError: !!error && vjState.sourceType === 'camera',
+    questState: questFeed.state, questError: questFeed.error, questFps: questFeed.fps, questLog: questFeed.log,
+    stitchState: stitchFeed.state, stitchError: stitchFeed.error, stitchFps: stitchFeed.fps, stitchLog: stitchFeed.log,
+    akvjState: akvjFeed.state, akvjError: akvjFeed.error, akvjFps: akvjFeed.fps, akvjLog: akvjFeed.log,
+    akvj3dState: akvj3dFeed.state, akvj3dError: akvj3dFeed.error, akvj3dFps: akvj3dFeed.fps, akvj3dLog: akvj3dFeed.log,
+    akvj3dSensorState: akvj3dFeed.sidecarState, akvj3dSensorLabel: akvj3dFeed.sidecarLabel,
+    depthState: depthCloudFeed.state, depthBackend: depthCloudFeed.backend, depthProgress: depthCloudFeed.progress, depthFps: depthCloudFeed.fps, depthError: depthCloudFeed.error, depthLog: depthCloudFeed.log,
+  };
+
   return (
     <div
       className="w-full h-screen flex flex-col bg-black text-white overflow-hidden font-sans"
@@ -856,39 +927,74 @@ export default function App() {
         </div>
       )}
 
-      {/* Body row: left column (video banks + output canvas) + right control
-          rail (aside), which spans this row top-to-bottom. */}
+      {/* Full-width clip-grid banks strip — spans the top above the three
+          columns (collapsible; ClipGrid owns its own collapse + height). */}
+      {vjState.layoutMode === 'standard' && (
+        <div className="shrink-0 w-full border-b border-zinc-800">
+          <ClipGrid
+            state={vjState}
+            updateState={updateState}
+            onFiles={handleFiles}
+            onStagePoolItem={stagePoolItem}
+            onStagePoolItemAt={stagePoolItemAt}
+            onMoveClipToIndex={moveClipToIndex}
+          />
+        </div>
+      )}
+
+      {/* Body row: left composition column + centered output + right browser
+          column, each drag-resizable and collapsible. */}
       <div className="flex flex-1 min-h-0 w-full">
 
-      {/* Left column: Resolume-style clip grid above the output monitor. In
-          standard mode this is a vertical column; in other modes it becomes
-          `display:contents` so <main> stays a direct flex child of the body row
-          and its split/preview/fullscreen widths keep working. */}
-      <div className={vjState.layoutMode === 'standard' ? 'flex flex-col flex-1 min-w-0 min-h-0' : 'contents'}>
-      {vjState.layoutMode === 'standard' && (
-        <LibraryPool
-          items={pool.items}
-          loading={pool.loading}
-          error={pool.error}
-          refresh={pool.refresh}
-          stagedIds={stagedIds}
-          onStage={stagePoolItem}
-          onUnstage={unstagePoolItem}
-          collapsed={!!vjState.poolCollapsed}
-          onToggleCollapse={() => updateState({ poolCollapsed: !vjState.poolCollapsed })}
+      {/* Left COMPOSITION column (3-column shell): the deck's header + effect
+          decks + autopilot + sync bus. Drag-resizable width, collapsible. */}
+      {vjState.layoutMode === 'standard' && !vjState.leftPanelCollapsed && (
+        <aside
+          className="relative z-30 shrink-0 border-r border-zinc-800 bg-[#111] overflow-hidden flex flex-col"
+          style={{ width: vjState.vjLeftW ?? 320 }}
+        >
+          <div className="flex items-center justify-end px-1 py-0.5 border-b border-zinc-800 shrink-0">
+            <button
+              type="button"
+              onClick={() => updateState({ leftPanelCollapsed: true })}
+              className="p-1 rounded text-zinc-500 hover:text-white hover:bg-zinc-800"
+              title="Collapse composition column"
+              aria-label="Collapse composition column"
+              aria-expanded
+            >
+              <PanelLeftClose className="w-3.5 h-3.5" />
+            </button>
+          </div>
+          <div className="flex-1 min-h-0 overflow-hidden">
+            <ControlDeck region="composition" {...controlDeckProps} />
+          </div>
+        </aside>
+      )}
+      {vjState.layoutMode === 'standard' && !vjState.leftPanelCollapsed && (
+        <ResizeHandle
+          orientation="vertical"
+          title="Resize composition column"
+          onDrag={(d) => updateState({ vjLeftW: Math.max(220, Math.min(560, (vjState.vjLeftW ?? 320) + d)) })}
         />
       )}
-      {vjState.layoutMode === 'standard' && (
-        <ClipGrid
-          state={vjState}
-          updateState={updateState}
-          onFiles={handleFiles}
-          onStagePoolItem={stagePoolItem}
-          onStagePoolItemAt={stagePoolItemAt}
-          onMoveClipToIndex={moveClipToIndex}
-        />
+      {vjState.layoutMode === 'standard' && vjState.leftPanelCollapsed && (
+        <button
+          type="button"
+          onClick={() => updateState({ leftPanelCollapsed: false })}
+          className="relative z-30 w-6 shrink-0 border-r border-zinc-800 bg-[#111] text-zinc-500 hover:text-cyan-300 flex items-center justify-center"
+          title="Expand composition column"
+          aria-label="Expand composition column"
+          aria-expanded={false}
+        >
+          <ChevronRight className="w-4 h-4" />
+        </button>
       )}
 
+      {/* Center column: Resolume-style output monitor. In standard mode the left
+          column wraps just <main>; in other modes it becomes `display:contents`
+          so <main> stays a direct flex child and split/preview/fullscreen keep
+          working. */}
+      <div className={vjState.layoutMode === 'standard' ? 'flex flex-col flex-1 min-w-0 min-h-0' : 'contents'}>
       {/* Master Visualizer Component */}
       <main
         onDoubleClick={() => {
@@ -1042,14 +1148,24 @@ export default function App() {
         </aside>
       )}
 
-      {/* Controller Bus — full-height right panel. */}
+      {/* Right BROWSER column divider (3-column shell). */}
+      {vjState.layoutMode === 'standard' && !vjState.rightPanelCollapsed && (
+        <ResizeHandle
+          orientation="vertical"
+          title="Resize browser column"
+          onDrag={(d) => updateState({ vjRightW: Math.max(260, Math.min(680, (vjState.vjRightW ?? 360) - d)) })}
+        />
+      )}
+
+      {/* Controller Bus — right BROWSER column (sources + library + effects). */}
       <aside
+         style={vjState.layoutMode === 'standard' && !vjState.rightPanelCollapsed ? { width: vjState.vjRightW ?? 360 } : undefined}
          className={`
            ${vjState.layoutMode === 'fullscreen' ? 'translate-x-full absolute right-0 opacity-0 pointer-events-none' : 'relative'}
            ${vjState.layoutMode === 'split' ? 'w-1/2 flex-none' : ''}
            ${vjState.layoutMode === 'preview' ? 'flex-1' : ''}
-           ${vjState.layoutMode === 'standard' ? (vjState.rightPanelCollapsed ? 'hidden' : 'w-96 flex-none') : ''}
-           z-40 shadow-[-10px_0_30px_rgba(0,0,0,0.8)] border-l border-cyan-900/40 transition-all duration-500 bg-[#111] overflow-hidden
+           ${vjState.layoutMode === 'standard' ? (vjState.rightPanelCollapsed ? 'hidden' : 'flex-none') : ''}
+           flex flex-col z-40 shadow-[-10px_0_30px_rgba(0,0,0,0.8)] border-l border-cyan-900/40 transition-all duration-500 bg-[#111] overflow-hidden
          `}
       >
         {vjState.layoutMode === 'standard' && (
@@ -1066,6 +1182,21 @@ export default function App() {
               <PanelRightClose className="w-3.5 h-3.5" />
             </button>
           </div>
+        )}
+        {/* Library Pool — the media browser, moved into the right column. Drag a
+            clip straight onto a bank slot up top. */}
+        {vjState.layoutMode === 'standard' && (
+          <LibraryPool
+            items={pool.items}
+            loading={pool.loading}
+            error={pool.error}
+            refresh={pool.refresh}
+            stagedIds={stagedIds}
+            onStage={stagePoolItem}
+            onUnstage={unstagePoolItem}
+            collapsed={!!vjState.poolCollapsed}
+            onToggleCollapse={() => updateState({ poolCollapsed: !vjState.poolCollapsed })}
+          />
         )}
         {/* Live source monitor — reuses the already-decoded Quest/Cymatics
             stream (no second decode). */}
@@ -1087,7 +1218,18 @@ export default function App() {
         {vjState.layoutMode === 'standard' && vjState.sourceType === 'camera' && vjState.cameraSource === 'depthcloud' && depthCloudFeed.stream && (
           <SourcePreview stream={depthCloudFeed.stream} label="DEPTH" />
         )}
+        {vjState.layoutMode === 'standard' && vjState.sourceType === 'camera' && vjState.cameraSource === 'spectra' && spectraFeed.stream && (
+          <SourcePreview stream={spectraFeed.stream} label="SPECTRA" />
+        )}
+        {vjState.layoutMode === 'standard' && vjState.sourceType === 'camera' && vjState.cameraSource === 'shader' && shaderFeed.stream && (
+          <SourcePreview stream={shaderFeed.stream} label="SHADER" />
+        )}
+        {vjState.layoutMode === 'standard' && vjState.sourceType === 'camera' && vjState.cameraSource === 'asciiline' && asciilineFeed.stream && (
+          <SourcePreview stream={asciilineFeed.stream} label="ASCII" />
+        )}
+        <div className="flex-1 min-h-0 overflow-hidden">
         <ControlDeck
+          region={vjState.layoutMode === 'standard' ? 'browser' : 'all'}
           state={vjState}
           updateState={updateState}
           reset={resetState}
@@ -1117,6 +1259,7 @@ export default function App() {
           depthError={depthCloudFeed.error}
           depthLog={depthCloudFeed.log}
         />
+        </div>
       </aside>
 
       </div>
