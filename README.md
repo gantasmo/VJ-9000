@@ -1,6 +1,6 @@
 <h1 align="center">VJ-9000</h1>
 
-<p align="center"><strong>by <a href="https://github.com/gantasmo">GANTASMO</a></strong></p>
+<p align="center"><strong>by <a href="https://gantasmo.com">GANTASMO</a></strong></p>
 
 <p align="center">
   <a href="https://react.dev/"><img src="https://img.shields.io/badge/React%2019%20%2F%20Vite-61DAFB?logo=react&logoColor=black" alt="React 19, Vite"></a>
@@ -20,31 +20,36 @@
 
 VJ-9000 is a browser-based, audio-reactive visual engine for live performance. It renders live cameras, video clips, generated sources, and still images through a real-time WebGL effects stack with MIDI-mappable controls and audio reactivity. It runs standalone in a browser and serves as the live-visuals engine embedded in [theDAW](https://github.com/gantasmo/theDAW).
 
-## How a frame is built
+## Pipeline
 
 ```mermaid
-flowchart LR
-  subgraph Sources["Source (one of)"]
-    CAM["Camera<br/>webcam, phone, Quest"]
-    CLIP["Video clip or still"]
-    SHADER["GLSL shader<br/>fractals, 8 materials"]
-    DEPTH["Depth cloud<br/>akvj, spectra, cymatics"]
-    QUEST["Quest passthrough<br/>questcast, queststitch"]
+flowchart TD
+  subgraph SRC["Sources (one active)"]
+    direction LR
+    CAM["Camera<br/>webcam, phone, Quest"]:::src
+    CLIP["Video clip / still"]:::src
+    SHADER["GLSL shader<br/>fractals, 8 materials"]:::src
+    DEPTH["Depth / generative<br/>akvj, spectra, cymatics"]:::src
+    QUEST["Quest passthrough<br/>questcast, queststitch"]:::src
   end
-  subgraph Banks["Source banks"]
-    BANK["Snapshot and recall slots<br/>click to place"]
-  end
-  Sources --> MIX["LIVE / CLIP crossfader"]
-  Banks --> MIX
-  MIX --> FX["GPU effect chain"]
-  FX --> ASCII["ASCII effect (optional)"]
-  ASCII --> OUT["Canvas output"]
-  AUDIO["Audio levels or mic"] --> FX
+  BANK["Source banks<br/>snapshot, recall, click-to-place"]:::src
+  AUDIO["Audio levels / mic"]:::ctrl
+  MIDI["MIDI, SLIDE, Sway pose"]:::ctrl
+  SRC --> MIX["LIVE / CLIP crossfader"]:::proc
+  BANK --> MIX
+  MIX --> FX["GPU effect chain"]:::proc
+  FX --> ASCII["ASCII effect"]:::proc
+  ASCII --> OUT["Canvas output"]:::out
+  AUDIO --> FX
   AUDIO --> SHADER
-  MIDI["MIDI, SLIDE, Sway pose"] --> MIX
+  MIDI --> MIX
   MIDI --> FX
-  OUT --> REC["WebM record / transcode"]
-  OUT --> WATCH["WebRTC watch-link"]
+  OUT --> REC["WebM record / transcode"]:::out
+  OUT --> WATCH["WebRTC watch-link"]:::out
+  classDef src fill:#0f3d57,stroke:#3aa0db,color:#eaf6ff;
+  classDef ctrl fill:#4a3115,stroke:#e09a3a,color:#fff4e3;
+  classDef proc fill:#0e3b3b,stroke:#2bb3a3,color:#e6fffb;
+  classDef out fill:#13402a,stroke:#46c47a,color:#e7ffee;
 ```
 
 ## Sources
@@ -70,7 +75,7 @@ A composable GPU chain, every node MIDI-mappable, with a SOLO mode that isolates
 - **Time:** playback speed, reverse, posterize-time, echo trails, slit-scan, time displacement.
 - **Post:** scanlines, vignette, CRT, the ASCII effect, and CSS-filter looks for sepia, grayscale, and blur.
 
-## Reactivity, control, and capture
+## Performance
 
 - **Reactivity.** Audio reactivity from the host player's levels or a local microphone, BPM sync, an auto-LFO, and an Autopilot that sequences effects and clip switches.
 - **Control.** Every control is MIDI-mappable, the host's SLIDE surface stays in two-way sync, and the Sway pose control bus drives parameters from camera-tracked motion.
@@ -78,7 +83,7 @@ A composable GPU chain, every node MIDI-mappable, with a SOLO mode that isolates
 - **Broadcast.** A WebRTC watch-link streams the live output and audio to remote viewers.
 - **Performance.** Render-scale tiers trade sharpness for frame rate, and the render loop parks near zero GPU when the host tab is backgrounded.
 
-## theDAW integration
+## Integration
 
 Inside theDAW's VJ tab, VJ-9000 runs in an iframe and communicates with the host over `postMessage`:
 
@@ -87,7 +92,7 @@ Inside theDAW's VJ tab, VJ-9000 runs in an iframe and communicates with the host
 - Clips and images imported into VJ-9000 upload to theDAW's library, and their session `blob:` URLs are replaced with stable library URLs so a cue survives a reload.
 - A LAN URL and QR code make the output reachable from a phone or tablet on the same network for a second screen or a camera source.
 
-## Running locally
+## Development
 
 Prerequisites: Node.js.
 
