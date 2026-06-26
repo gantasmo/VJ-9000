@@ -34,8 +34,12 @@ export interface VJState {
    *  colour and the VJ renders the cloud in three.js, no Unity). 'screen' remains
    *  as the fallback window-capture path, or 'depthcloud' — ANY video (the loaded
    *  clip, else the webcam) turned into a live point cloud via in-browser monocular
-   *  depth (no depth camera), rendered through the same AkvjCloudRenderer. */
-  cameraSource?: 'device' | 'screen' | 'quest' | 'queststitch' | 'cymatics' | 'akvj' | 'akvj3d' | 'depthcloud';
+   *  depth (no depth camera), rendered through the same AkvjCloudRenderer, or
+   *  'shader' — a generic fullscreen GLSL fragment shader (atzedent-convention
+   *  shadertoys, seeded by yotta) rendered as a generative audio-reactive source,
+   *  or 'asciiline' — the upstream frame (loaded clip, else webcam) re-rendered as
+   *  live GPU ASCII (a port of ASCILINE's glyph mapper). */
+  cameraSource?: 'device' | 'screen' | 'quest' | 'queststitch' | 'cymatics' | 'akvj' | 'akvj3d' | 'depthcloud' | 'spectra' | 'shader' | 'asciiline';
   /** Active Cymatics mode when cameraSource==='cymatics'. */
   cymaticsMode?: 'orb' | 'cymatics' | 'landscape-chrome' | 'landscape-ferrofluid';
   /** Active particle style when cameraSource==='akvj3d' (the KINECT point cloud);
@@ -58,6 +62,30 @@ export interface VJState {
   depthPrecision?: 'auto' | 'fp16' | 'q8' | 'fp32'; // model precision (OOM lever)
   depthRes?: number; // cloud/inference width (256 / 320 / 448)
   depthFps?: number; // inference rate
+  /** SPECTRA-RIDER source (3D audio spectrogram terrain) when cameraSource==='spectra'. */
+  spectraMode?: 'flight' | 'dynamic' | 'overhead' | 'horizon' | 'freecam';
+  spectraTheme?: string; // SPECTRA_THEMES id
+  spectraSensitivity?: number;
+  spectraSmoothing?: number;
+  spectraNoiseGate?: number;
+  spectraHeight?: number;
+  spectraEnergy?: number; // beat-impact
+  spectraAutoRotate?: boolean;
+  /** Generic GLSL shader source (atzedent-convention fragment shaders) when
+   *  cameraSource==='shader'. shaderId selects a bundled preset from
+   *  SHADER_PRESETS (yotta seeds the library); shaderAudioDrive (0..2) scales how
+   *  hard the audio energy accelerates the shader's camera/scrub. */
+  shaderId?: string;
+  shaderAudioDrive?: number;
+  /** ASCII source (cameraSource==='asciiline'): cell columns (density), mono accent
+   *  vs source true-colour, and the accent colour used in mono mode. */
+  asciiCols?: number;
+  asciiMono?: boolean;
+  asciiAccent?: string;
+  /** When true, run the webcam MediaPipe body-pose detector and forward the six
+   *  pose scalars to theDAW's control bus. Control data only; runs alongside any
+   *  visual source. */
+  gestureControl?: boolean;
   /** Quest stereo-mirror crop: full SBS frame, or one eye cropped to 16:9. */
   questView?: 'full' | 'left' | 'right';
   /** Selected videoinput deviceId when cameraSource==='device' (the camera
@@ -251,6 +279,12 @@ export interface VJState {
   /** Collapse/minimize state for the standard layout panels. */
   banksCollapsed?: boolean;
   rightPanelCollapsed?: boolean;
+  /** Collapse the left COMPOSITION column in the 3-column shell. */
+  leftPanelCollapsed?: boolean;
+  /** Drag-resizable sizes (px) for the 3-column shell: the left composition
+   *  column width and the right browser column width. */
+  vjLeftW?: number;
+  vjRightW?: number;
   /** Collapse state for the Library Pool browser above the banks. */
   poolCollapsed?: boolean;
 }
@@ -276,6 +310,20 @@ export const DEFAULT_VJ_STATE: VJState = {
   depthPrecision: 'auto',
   depthRes: 320,
   depthFps: 8,
+  spectraMode: 'dynamic',
+  spectraTheme: 'mel-spectrogram',
+  spectraSensitivity: 1,
+  spectraSmoothing: 0.65,
+  spectraNoiseGate: 0.06,
+  spectraHeight: 1,
+  spectraEnergy: 1,
+  spectraAutoRotate: true,
+  shaderId: 'yotta',
+  shaderAudioDrive: 1,
+  asciiCols: 160,
+  asciiMono: false,
+  asciiAccent: '#00ff41',
+  gestureControl: false,
   questView: 'full',
   cameraDeviceId: null,
   cameraReinit: 0,
@@ -294,6 +342,9 @@ export const DEFAULT_VJ_STATE: VJState = {
   gridRows: 1,
   gridBank: 0,
   poolCollapsed: false,
+  leftPanelCollapsed: false,
+  vjLeftW: 320,
+  vjRightW: 360,
 
   hue: 0,
   saturation: 100,

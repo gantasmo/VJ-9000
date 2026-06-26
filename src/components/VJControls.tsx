@@ -4,6 +4,8 @@ import { Activity, RefreshCcw, Upload, Sliders, Cpu, Radio, Hash, Video, LayoutP
 import { PluginsPanel } from './PluginsPanel';
 import { backendBase } from '../libraryUpload';
 import { AKVJ_STYLES } from '../akvj/AkvjCloudRenderer';
+import { SPECTRA_THEMES, SPECTRA_MODES } from '../spectra/SpectraRenderer';
+import { SHADER_PRESETS } from '../shader/shaderPresets';
 
 const AUTOPILOT_EFFECTS = [
   { key: 'feedback', label: 'Feedback Wash' },
@@ -42,6 +44,11 @@ interface ControlsProps {
   updateState: (updates: Partial<VJState>) => void;
   reset: () => void;
   hasCameraError: boolean;
+  /** Which half of the deck to render. The 3-column shell renders the deck twice:
+   *  'composition' (left column: header + autopilot + effect decks + plugins +
+   *  sync bus) and 'browser' (right column: the SOURCE section). 'all' (default)
+   *  renders everything in one scroll, the standalone / single-panel behavior. */
+  region?: 'composition' | 'browser' | 'all';
   /** Direct QuestCast feed status (from useQuestCast in App). */
   questState?: 'idle' | 'starting' | 'connecting' | 'waiting-video' | 'live' | 'error';
   questError?: string | null;
@@ -150,7 +157,7 @@ const QuestLogPanel: React.FC<{ log: string[] }> = ({ log }) => {
 // Memoized so the deck only re-renders when its props actually change — not
 // every time the parent App re-renders for an unrelated reason. updateState is
 // stabilized with useCallback in App so this memo bites.
-function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState = 'idle', questError = null, questFps = 0, questLog = [], stitchState = 'idle', stitchError = null, stitchFps = 0, stitchLog = [], akvjState = 'idle', akvjError = null, akvjFps = 0, akvjLog = [], akvj3dState = 'idle', akvj3dError = null, akvj3dFps = 0, akvj3dLog = [], akvj3dSensorState = 'unknown', akvj3dSensorLabel = 'checking sensor…', depthState = 'idle', depthBackend = null, depthProgress = 0, depthFps = 0, depthError = null, depthLog = [] }: ControlsProps) {
+function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState = 'idle', questError = null, questFps = 0, questLog = [], stitchState = 'idle', stitchError = null, stitchFps = 0, stitchLog = [], akvjState = 'idle', akvjError = null, akvjFps = 0, akvjLog = [], akvj3dState = 'idle', akvj3dError = null, akvj3dFps = 0, akvj3dLog = [], akvj3dSensorState = 'unknown', akvj3dSensorLabel = 'checking sensor…', depthState = 'idle', depthBackend = null, depthProgress = 0, depthFps = 0, depthError = null, depthLog = [], region = 'all' }: ControlsProps) {
   const [showWeights, setShowWeights] = useState(true);
   const [showApDynamics, setShowApDynamics] = useState(false);
   const [showExportFolder, setShowExportFolder] = useState(false);
@@ -298,9 +305,10 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
 
   return (
     <div className="h-full bg-[#111] border-l border-zinc-800 flex flex-col items-stretch overflow-y-auto w-full shrink-0 custom-scrollbar">
-      {/* Header — tightened: smaller title font, single line of padding,
-          subtitle sits flush under title. Layout-mode + reset buttons
-          shrink to icon-fit. */}
+      {/* Header (REC / codec / quality / export / layout-mode / reset) — lives in
+          the BROWSER (right) column per the 3-column layout. */}
+      {region !== 'composition' && (
+      <>
       <div className="px-2 py-1.5 border-b border-zinc-800 flex items-center justify-between gap-1 sticky top-0 bg-[#111] z-50 shadow-md">
         {/* REC + export controls — replaces the former LUMINA // OMEGA
             branding. Viewport-layout + reset buttons stay on the right. */}
@@ -454,9 +462,13 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
         </div>
       )}
       
+      </>
+      )}
+
       {/* INPUT DECK — moved up above the autopilot override per UX
           spec. Houses the CAM/MEM crossfader, Canvas Format, MUTE +
           IMPORT controls, and the Archive Bin. */}
+      {region !== 'composition' && (
       <section className="mx-3 mt-3 mb-0 p-3 border border-zinc-800 bg-black/30 rounded space-y-3">
         <h2 className="text-[10px] text-zinc-400 uppercase tracking-widest font-mono border-b border-zinc-800 pb-1 mb-1 flex items-center gap-2">
           <Radio className="w-3 h-3 text-fuchsia-500" /> SOURCE
@@ -586,6 +598,50 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
                 })}
                 highlight="purple"
               />
+              <TogglePad
+                label="SPECTRA"
+                active={state.cameraSource === 'spectra'}
+                onClick={() => updateState({
+                  sourceType: 'camera',
+                  sourceBlend: 0,
+                  cameraSource: 'spectra',
+                  cameraReinit: (state.cameraReinit ?? 0) + 1,
+                })}
+                highlight="purple"
+              />
+              <TogglePad
+                label="SHADER"
+                active={state.cameraSource === 'shader'}
+                onClick={() => updateState({
+                  sourceType: 'camera',
+                  sourceBlend: 0,
+                  cameraSource: 'shader',
+                  cameraReinit: (state.cameraReinit ?? 0) + 1,
+                })}
+                highlight="purple"
+              />
+              <TogglePad
+                label="ASCII"
+                active={state.cameraSource === 'asciiline'}
+                onClick={() => updateState({
+                  sourceType: 'camera',
+                  sourceBlend: 0,
+                  cameraSource: 'asciiline',
+                  cameraReinit: (state.cameraReinit ?? 0) + 1,
+                })}
+                highlight="purple"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <TogglePad
+                label="GESTURE"
+                active={state.gestureControl ?? false}
+                onClick={() => updateState({ gestureControl: !(state.gestureControl ?? false) })}
+                highlight="purple"
+              />
+              <span className="flex-1 text-[8px] font-mono text-zinc-600 leading-snug">
+                Webcam body pose to the control bus. Runs alongside any source.
+              </span>
             </div>
             {(state.cameraSource ?? 'device') === 'device' && (
               <div className="flex flex-col gap-1">
@@ -718,6 +774,150 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
                 </div>
                 <p className="text-[8px] font-mono text-zinc-600 leading-snug">
                   Reflective black-chrome visual, audio-reactive. Mix it against a clip with the CAM↔MEM crossfader; all DECK effects apply.
+                </p>
+              </div>
+            )}
+            {state.cameraSource === 'spectra' && (
+              <div className="space-y-1.5">
+                <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">Camera</span>
+                <div className="grid grid-cols-3 gap-1">
+                  {SPECTRA_MODES.map((m) => (
+                    <TogglePad
+                      key={m.id}
+                      label={m.name}
+                      active={(state.spectraMode ?? 'dynamic') === m.id}
+                      onClick={() => updateState({ spectraMode: m.id })}
+                      highlight="purple"
+                    />
+                  ))}
+                  <TogglePad
+                    label="Auto-Pan"
+                    active={state.spectraAutoRotate ?? true}
+                    onClick={() => updateState({ spectraAutoRotate: !(state.spectraAutoRotate ?? true) })}
+                    highlight="purple"
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label htmlFor="vj-spectra-theme" className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">
+                    Theme
+                  </label>
+                  <select
+                    id="vj-spectra-theme"
+                    name="vj-spectra-theme"
+                    value={state.spectraTheme ?? 'mel-spectrogram'}
+                    onChange={(e) => updateState({ spectraTheme: e.target.value })}
+                    className="bg-black/40 border border-zinc-800 rounded px-2 py-1 text-[10px] font-mono text-zinc-200 focus:border-purple-500/50 outline-none"
+                  >
+                    {SPECTRA_THEMES.map((t) => (
+                      <option key={t.id} value={t.id}>{t.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="grid grid-cols-2 gap-x-2 gap-y-1">
+                  {([
+                    { id: 'spectra-sensitivity', label: 'Sensitivity', min: 0.2, max: 3, step: 0.01, value: state.spectraSensitivity ?? 1, set: (v: number) => updateState({ spectraSensitivity: v }) },
+                    { id: 'spectra-smoothing', label: 'Smoothing', min: 0, max: 0.95, step: 0.01, value: state.spectraSmoothing ?? 0.65, set: (v: number) => updateState({ spectraSmoothing: v }) },
+                    { id: 'spectra-noisegate', label: 'Noise Gate', min: 0, max: 0.6, step: 0.01, value: state.spectraNoiseGate ?? 0.06, set: (v: number) => updateState({ spectraNoiseGate: v }) },
+                    { id: 'spectra-height', label: 'Height', min: 0.2, max: 3, step: 0.01, value: state.spectraHeight ?? 1, set: (v: number) => updateState({ spectraHeight: v }) },
+                    { id: 'spectra-energy', label: 'Beat Impact', min: 0, max: 3, step: 0.01, value: state.spectraEnergy ?? 1, set: (v: number) => updateState({ spectraEnergy: v }) },
+                  ]).map((c) => (
+                    <div key={c.id} className="space-y-0.5">
+                      <label htmlFor={c.id} className="block text-[8px] font-mono uppercase tracking-widest text-zinc-500">{c.label}</label>
+                      <input
+                        id={c.id}
+                        name={c.id}
+                        type="range"
+                        min={c.min}
+                        max={c.max}
+                        step={c.step}
+                        value={c.value}
+                        onChange={(e) => c.set(parseFloat(e.target.value))}
+                        className="w-full accent-purple-500"
+                      />
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[8px] font-mono text-zinc-600 leading-snug">
+                  3D audio spectrogram terrain, fed the VJ's live audio. Enable the MIC input for a true spectrogram; embedded in theDAW it reacts to the 4 master bands.
+                </p>
+              </div>
+            )}
+            {state.cameraSource === 'shader' && (
+              <div className="space-y-1.5">
+                <div className="flex flex-col gap-1">
+                  <label htmlFor="vj-shader-preset" className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">
+                    Shader
+                  </label>
+                  <select
+                    id="vj-shader-preset"
+                    name="vj-shader-preset"
+                    value={state.shaderId ?? 'yotta'}
+                    onChange={(e) => updateState({ shaderId: e.target.value })}
+                    className="bg-black/40 border border-zinc-800 rounded px-2 py-1 text-[10px] font-mono text-zinc-200 focus:border-purple-500/50 outline-none"
+                  >
+                    {SHADER_PRESETS.map((p) => (
+                      <option key={p.id} value={p.id}>{p.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-0.5">
+                  <label htmlFor="vj-shader-drive" className="block text-[8px] font-mono uppercase tracking-widest text-zinc-500">
+                    Audio Drive
+                  </label>
+                  <input
+                    id="vj-shader-drive"
+                    name="vj-shader-drive"
+                    type="range"
+                    min={0}
+                    max={2}
+                    step={0.01}
+                    value={state.shaderAudioDrive ?? 1}
+                    onChange={(e) => updateState({ shaderAudioDrive: parseFloat(e.target.value) })}
+                    className="w-full accent-purple-500"
+                  />
+                </div>
+                <p className="text-[8px] font-mono text-zinc-600 leading-snug">
+                  Fullscreen GLSL shader as a generative source, its camera driven by the VJ's live audio energy. {SHADER_PRESETS.find((p) => p.id === (state.shaderId ?? 'yotta'))?.attribution}
+                </p>
+              </div>
+            )}
+            {state.cameraSource === 'asciiline' && (
+              <div className="space-y-1.5">
+                <div className="space-y-0.5">
+                  <label htmlFor="ascii-cols" className="block text-[8px] font-mono uppercase tracking-widest text-zinc-500">Density (cols)</label>
+                  <input
+                    id="ascii-cols"
+                    name="ascii-cols"
+                    type="range"
+                    min={40}
+                    max={320}
+                    step={1}
+                    value={state.asciiCols ?? 160}
+                    onChange={(e) => updateState({ asciiCols: parseInt(e.target.value, 10) })}
+                    className="w-full accent-purple-500"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-1 items-center">
+                  <TogglePad
+                    label="Mono"
+                    active={state.asciiMono ?? false}
+                    onClick={() => updateState({ asciiMono: !(state.asciiMono ?? false) })}
+                    highlight="purple"
+                  />
+                  <div className="flex items-center gap-1.5">
+                    <label htmlFor="ascii-accent" className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">Accent</label>
+                    <input
+                      id="ascii-accent"
+                      name="ascii-accent"
+                      type="color"
+                      value={state.asciiAccent ?? '#00ff41'}
+                      onChange={(e) => updateState({ asciiAccent: e.target.value })}
+                      className="h-6 w-8 bg-transparent border border-zinc-800 rounded cursor-pointer"
+                    />
+                  </div>
+                </div>
+                <p className="text-[8px] font-mono text-zinc-600 leading-snug">
+                  Re-renders the loaded clip (else the webcam) as live GPU ASCII. Mono uses the accent colour; otherwise each glyph keeps its source colour. Ported from ASCILINE (MIT, no advertising use).
                 </p>
               </div>
             )}
@@ -1048,7 +1248,10 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
           </div>
         )}
       </section>
+      )}
 
+      {region !== 'browser' && (
+      <>
       {apActive && (
          <div className="mx-3 mt-3 mb-0 p-3 border border-red-900/50 bg-red-950/20 rounded shadow-[inset_0_0_20px_rgba(239,68,68,0.05)]">
             <h2 className="text-red-500 font-mono text-[11px] uppercase tracking-widest mb-3 flex items-center gap-2 font-bold">
@@ -1505,6 +1708,8 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
             </p>
          </div>
       </div>
+      </>
+      )}
     </div>
   );
 }

@@ -166,6 +166,7 @@ function ClipGridImpl({
         >
           {collapsed ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
         </button>
+        <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-500 select-none">Banks</span>
 
         <button
           type="button"
