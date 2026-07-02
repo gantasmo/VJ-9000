@@ -69,10 +69,17 @@ export function useDepthCloud(
   params: AkvjParams = AKVJ_PARAMS_DEFAULT,
   clipUrl: string | null = null,
   engine: { precision: string; res: number; fps: number } = { precision: 'auto', res: 320, fps: 8 },
+  // Optional getter for the LIVE deck video element (the loaded clip). When set
+  // and a clip is loaded, depth samples that element directly — in sync with the
+  // deck, no second decode and no extra camera prompt — instead of opening its
+  // own input. Returns null to fall back to the webcam path.
+  getSourceVideo: (() => HTMLVideoElement | null) | null = null,
 ): DepthCloudFeed {
   const [feed, setFeed] = useState<DepthCloudFeed>(initialFeed);
   const getLevelsRef = useRef(getLevels);
   getLevelsRef.current = getLevels;
+  const getSourceVideoRef = useRef(getSourceVideo);
+  getSourceVideoRef.current = getSourceVideo;
   const rendererRef = useRef<AkvjCloudRenderer | null>(null);
   const modeRef = useRef(mode);
   modeRef.current = mode;
@@ -92,10 +99,6 @@ export function useDepthCloud(
     let gridW = 0;
     let gridH = 0;
     let emaBuf: Float32Array | null = null;
-    let depthMeters: Float32Array | null = null;
-    let depthU16: Uint16Array | null = null;
-    let pendingColor: ImageBitmap | null = null;
-    let sending = false;
     let inferTimer: ReturnType<typeof setInterval> | null = null;
     let inferCount = 0;
     let fpsT0 = performance.now();
@@ -116,7 +119,8 @@ export function useDepthCloud(
       patch({ state: 'error', error: m });
     };
 
-    logLine(`depthcloud enabled (${clipUrl ? 'clip' : 'webcam'} source)`);
+    const sharedInput = !!getSourceVideoRef.current && !!clipUrl;
+    logLine(`depthcloud enabled (${sharedInput ? 'live deck clip' : clipUrl ? 'clip' : 'webcam'} source)`);
 
     // Renderer + capture stream (reused from the Kinect path).
     const canvas = document.createElement('canvas');
@@ -162,9 +166,10 @@ export function useDepthCloud(
       small.width = w;
       small.height = h;
       emaBuf = null;
-      depthMeters = new Float32Array(w * h);
-      depthU16 = new Uint16Array(w * h);
       renderer?.setXYTable(w, h, buildPinholeTable(w, h));
+      // Colour rides the small canvas as ONE persistent CanvasTexture; the
+      // renderer re-uploads it with each depth push (no createImageBitmap).
+      renderer?.setColorCanvas(small);
       logLine(`grid ${w}x${h} (pinhole ray-table)`);
     };
 
@@ -196,18 +201,24 @@ export function useDepthCloud(
         const { width: w, height: h, channels } = msg;
         if (w !== gridW || h !== gridH) return; // a stale frame from before a resize
         const d = new Uint8Array(msg.data);
-        if (!depthMeters || !depthU16) return;
-        const dm = depthMeters;
-        // Depth-Anything: brighter = nearer. Map to pseudo-meters (near..far).
-        for (let i = 0; i < dm.length; i++) {
-          const v = channels === 1 ? d[i] : d[i * channels];
-          dm[i] = NEAR_M + ((255 - v) / 255) * (FAR_M - NEAR_M);
+        const n = w * h;
+        // Depth-Anything: brighter = nearer. ONE fused pass maps u8 to
+        // pseudo-meters (near..far) and EMA-smooths straight into the buffer
+        // the renderer uploads; the mm quantise round-trip is gone.
+        if (!emaBuf || emaBuf.length !== n) {
+          emaBuf = new Float32Array(n);
+          for (let i = 0; i < n; i++) {
+            const v = channels === 1 ? d[i] : d[i * channels];
+            emaBuf[i] = NEAR_M + ((255 - v) / 255) * (FAR_M - NEAR_M);
+          }
+        } else {
+          const eb = emaBuf;
+          for (let i = 0; i < n; i++) {
+            const v = channels === 1 ? d[i] : d[i * channels];
+            eb[i] += (NEAR_M + ((255 - v) / 255) * (FAR_M - NEAR_M) - eb[i]) * EMA;
+          }
         }
-        if (!emaBuf) emaBuf = dm.slice();
-        else for (let i = 0; i < dm.length; i++) emaBuf[i] += (dm[i] - emaBuf[i]) * EMA;
-        for (let i = 0; i < emaBuf.length; i++) depthU16[i] = Math.min(65535, Math.round(emaBuf[i] * 1000));
-        renderer?.pushFrame(w, h, depthU16, pendingColor);
-        pendingColor = null; // the renderer owns it now
+        renderer?.pushFrameDepthMeters(w, h, emaBuf);
 
         inferCount += 1;
         const now = performance.now();
@@ -221,34 +232,35 @@ export function useDepthCloud(
     worker.onerror = (e) => fail(`depth worker crashed: ${e.message}`);
     worker.postMessage({ type: 'init', precision: engine.precision });
 
-    const tick = async () => {
-      if (closed || sending || !sctx) return;
-      if (video.readyState < 2 || !video.videoWidth) return;
+    const tick = () => {
+      if (closed || !sctx) return;
+      // Prefer the live deck video element when the host provides one; otherwise
+      // use our own input element (webcam fallback).
+      const srcVid = getSourceVideoRef.current?.() ?? video;
+      if (!srcVid || srcVid.readyState < 2 || !srcVid.videoWidth) return;
       if (typeof document !== 'undefined' && document.hidden) return;
-      sending = true;
       try {
         const w = targetW;
-        const h = Math.max(2, Math.round((targetW * video.videoHeight) / video.videoWidth));
+        const h = Math.max(2, Math.round((targetW * srcVid.videoHeight) / srcVid.videoWidth));
         ensureGrid(w, h);
-        sctx.drawImage(video, 0, 0, w, h);
+        // The small canvas doubles as the colour texture (setColorCanvas), so
+        // this single draw feeds inference AND the cloud's colour.
+        sctx.drawImage(srcVid, 0, 0, w, h);
         const imgData = sctx.getImageData(0, 0, w, h);
-        // Pair the colour bitmap with the depth this frame will produce.
-        if (pendingColor) pendingColor.close();
-        pendingColor = await createImageBitmap(small);
-        if (closed) {
-          pendingColor.close();
-          pendingColor = null;
-          return;
-        }
         worker.postMessage({ type: 'frame', data: imgData.data.buffer, width: w, height: h }, [imgData.data.buffer]);
       } catch (e) {
         logLine(`frame skipped: ${(e as Error)?.message ?? e}`);
-      } finally {
-        sending = false;
       }
     };
 
     const startInput = async () => {
+      // When the host hands us the live deck clip element, sample it directly:
+      // skip our own decode/getUserMedia and just run the inference timer. tick()
+      // reads getSourceVideo() each pass and waits for it to be frame-ready.
+      if (sharedInput) {
+        inferTimer = setInterval(() => void tick(), inferMs);
+        return;
+      }
       try {
         if (clipUrl) {
           if (!clipUrl.startsWith('blob:')) video.crossOrigin = 'anonymous';
@@ -281,7 +293,6 @@ export function useDepthCloud(
       } catch {
         /* ignore */
       }
-      pendingColor?.close();
       mediaStreamForCam?.getTracks().forEach((t) => t.stop());
       try {
         video.pause();
@@ -304,7 +315,10 @@ export function useDepthCloud(
   }, [mode]);
   useEffect(() => {
     rendererRef.current?.setParams(params);
-  }, [params.spin, params.speed, params.size, params.density, params.bright, params.bloom, params.wind, params.trails, params.distance]);
+  }, [params.spin, params.speed, params.size, params.density, params.bright, params.bloom, params.wind, params.trails, params.distance, params.renderFps, params.orbitOn, params.lockOn, params.camX, params.camY, params.camZ, params.rotX, params.rotY, params.rotZ]);
+  useEffect(() => {
+    if ((params.recenterNonce ?? 0) > 0) rendererRef.current?.recenter();
+  }, [params.recenterNonce]);
 
   return feed;
 }

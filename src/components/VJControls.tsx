@@ -5,7 +5,14 @@ import { PluginsPanel } from './PluginsPanel';
 import { backendBase } from '../libraryUpload';
 import { AKVJ_STYLES } from '../akvj/AkvjCloudRenderer';
 import { SPECTRA_THEMES, SPECTRA_MODES } from '../spectra/SpectraRenderer';
-import { SHADER_PRESETS } from '../shader/shaderPresets';
+import { SHADER_PRESETS, SHADER_MATERIALS, type ShaderAudioBand } from '../shader/shaderPresets';
+import {
+  QUANTUM_PARAMS,
+  QUANTUM_GROUPS,
+  QUANTUM_GEOMETRY_NAMES,
+  QUANTUM_PALETTES,
+  type QuantumAudioBand,
+} from '../quantum/QuantumLatticeEngine';
 
 const AUTOPILOT_EFFECTS = [
   { key: 'feedback', label: 'Feedback Wash' },
@@ -214,7 +221,8 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
     const percentage = ((value - min) / (max - min)) * 100;
     const apActiveGlobally = state.autoPilot;
     const apWeight = paramKey && state.apWeights ? (state.apWeights[paramKey] ?? 1.0) : 1.0;
-    
+    const faderId = `vj-fader-${paramKey ?? String(label).toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
+
     const handleDoubleClick = () => {
       if (paramKey && (DEFAULT_VJ_STATE as any)[paramKey] !== undefined) {
           onChange((DEFAULT_VJ_STATE as any)[paramKey]);
@@ -232,8 +240,10 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
                 <div className="flex items-center gap-1 group/ap tooltip" title="Autopilot Probability (0=Off, 1=Max)">
                    <span className="text-[8px] text-red-500/70">AP:</span>
                    <input
+                      id={`vj-ap-${paramKey}`} name={`vj-ap-${paramKey}`}
                       type="range" min="0" max="1" step="0.05"
                       value={apWeight}
+                      aria-label={`Autopilot probability for ${label}`}
                       onChange={(e) => updateState({ apWeights: { ...(state.apWeights || {}), [paramKey]: parseFloat(e.target.value) } })}
                       className="w-12 h-1 accent-red-500 bg-red-950 rounded-sm cursor-col-resize opacity-50 group-hover/ap:opacity-100 transition-opacity"
                    />
@@ -243,12 +253,14 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
           </div>
         </div>
         <div className={`relative w-full h-5 bg-black rounded-sm overflow-hidden cursor-crosshair border shadow-inner transition-colors ${apActiveGlobally && apWeight > 0 ? 'border-red-900/50 opacity-70' : 'border-zinc-800 group-hover:border-zinc-700'}`}>
-           <div 
-             className="absolute top-0 left-0 h-full bg-gradient-to-r from-cyan-900 to-cyan-500 border-r border-cyan-300 pointer-events-none" 
-             style={{ width: `${percentage}%` }} 
+           <div
+             className="absolute top-0 left-0 h-full bg-linear-to-r from-cyan-900 to-cyan-500 border-r border-cyan-300 pointer-events-none"
+             style={{ width: `${percentage}%` }}
            />
            <input
+              id={faderId} name={faderId}
               type="range" min={min} max={max} step={step} value={value}
+              aria-label={label}
               onChange={(e) => onChange(Number(e.target.value))}
               className="absolute inset-0 w-full h-full opacity-0 cursor-crosshair"
            />
@@ -257,7 +269,7 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
     );
   };
 
-  const TogglePad = ({ label, active, onClick, highlight = 'cyan', flex = false, paramKey }: any) => {
+  const TogglePad = ({ label, active, onClick, highlight = 'cyan', flex = false, paramKey, compact = false }: any) => {
     const activeColors: Record<string, string> = {
       cyan: 'bg-cyan-900/30 border-cyan-500 text-cyan-300 shadow-[0_0_15px_rgba(6,182,212,0.3)]',
       red: 'bg-red-900/30 border-red-500 text-red-300 shadow-[0_0_15px_rgba(239,68,68,0.3)]',
@@ -266,22 +278,28 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
 
     const apActiveGlobally = state.autoPilot;
     const apWeight = paramKey && state.apWeights ? (state.apWeights[paramKey] ?? 1.0) : 1.0;
+    // Some pads share a paramKey (e.g. the two stereoMode pads), so the label
+    // joins the id to keep DOM ids unique.
+    const apPadId = `vj-ap-pad-${paramKey}-${String(label).toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
 
     return (
       <div className={`relative flex flex-col ${flex ? 'flex-1' : ''}`}>
         {apActiveGlobally && paramKey && (
            <div className="absolute -top-2 left-0 right-0 flex justify-center z-10 group/ap tooltip" title="AutoPilot Probability (0=Off, 1=Max)">
                <input
+                  id={apPadId} name={apPadId}
                   type="range" min="0" max="1" step="0.05"
                   value={apWeight}
+                  aria-label={`Autopilot probability for ${label}`}
                   onChange={(e) => updateState({ apWeights: { ...(state.apWeights || {}), [paramKey]: parseFloat(e.target.value) } })}
-                  className="w-8 h-[2px] accent-red-500 bg-red-950 rounded-sm cursor-col-resize opacity-50 group-hover/ap:opacity-100 transition-opacity"
+                  className="w-8 h-0.5 accent-red-500 bg-red-950 rounded-sm cursor-col-resize opacity-50 group-hover/ap:opacity-100 transition-opacity"
                />
            </div>
         )}
         <button
            onClick={onClick}
-           className={`h-7 px-2 text-[10px] uppercase font-mono tracking-widest border transition-all select-none rounded-sm w-full ${
+           aria-pressed={!!active}
+           className={`${compact ? 'h-6 px-1 text-[9px] tracking-wide' : 'h-7 px-2 text-[10px] tracking-widest'} uppercase font-mono border transition-all select-none rounded-sm w-full ${
               active
                 ? activeColors[highlight]
                 : `bg-black border-zinc-800 hover:border-zinc-500 transition-colors ${apActiveGlobally && apWeight > 0 ? 'text-red-900/50' : 'text-zinc-600 hover:text-zinc-400'}`
@@ -466,34 +484,41 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
       )}
 
       {/* INPUT DECK — moved up above the autopilot override per UX
-          spec. Houses the CAM/MEM crossfader, Canvas Format, MUTE +
+          spec. Houses the unified source grid + LIVE/CLIP blend, Canvas Format, MUTE +
           IMPORT controls, and the Archive Bin. */}
       {region !== 'composition' && (
       <section className="mx-3 mt-3 mb-0 p-3 border border-zinc-800 bg-black/30 rounded space-y-3">
-        <h2 className="text-[10px] text-zinc-400 uppercase tracking-widest font-mono border-b border-zinc-800 pb-1 mb-1 flex items-center gap-2">
-          <Radio className="w-3 h-3 text-fuchsia-500" /> SOURCE
-        </h2>
+        <div className="flex items-center gap-2 border-b border-zinc-800 pb-1 mb-1">
+          <h2 className="text-[10px] text-zinc-400 uppercase tracking-widest font-mono flex items-center gap-2">
+            <Radio className="w-3 h-3 text-fuchsia-500" /> SOURCE
+          </h2>
+          {/* Camera input device lives in the header: compact, high-contrast,
+              label is sr-only (the dropdown is self-evident). */}
+          <label htmlFor="vj-cam-device" className="sr-only">Camera input device</label>
+          <select
+            id="vj-cam-device"
+            name="vj-cam-device"
+            value={state.cameraDeviceId ?? ''}
+            onChange={(e) => updateState({ cameraDeviceId: e.target.value || null, cameraReinit: (state.cameraReinit ?? 0) + 1 })}
+            title="Camera input device"
+            className="ml-auto max-w-40 truncate bg-zinc-800 border border-zinc-500 rounded px-1.5 py-0.5 text-[9px] font-mono text-zinc-100 focus:border-purple-400 outline-none"
+          >
+            <option value="">Default cam</option>
+            {videoDevices.map((d, i) => (
+              <option key={d.deviceId || i} value={d.deviceId}>
+                {d.label || `Camera ${i + 1}`}
+              </option>
+            ))}
+          </select>
+        </div>
 
-        {/* CAM/MEM toggles + crossfader. sourceBlend is the canonical
-            control; sourceType is derived from it (<0.5 = CAM, >=0.5 =
-            MEM) so the current renderer keeps working at the extremes. */}
+        {/* LIVE<->CLIP blend slider. The unified source grid below picks the
+            primary source (CLIP is just a tile); this blends the active live
+            source against the clip. sourceBlend is canonical; sourceType is
+            derived (<0.5 = live, >=0.5 = clip). */}
         <div>
-          <div className="grid grid-cols-2 gap-2 mb-1.5">
-            <TogglePad
-              label="CAM (Live)"
-              active={state.sourceType === 'camera'}
-              onClick={() => updateState({ sourceType: 'camera', sourceBlend: 0 })}
-              highlight="purple"
-            />
-            <TogglePad
-              label="MEM (Clip)"
-              active={state.sourceType === 'clip'}
-              onClick={() => updateState({ sourceType: 'clip', sourceBlend: 1 })}
-              highlight="purple"
-            />
-          </div>
           <div className="flex items-center gap-2">
-            <span className="text-[8px] font-mono uppercase tracking-widest text-purple-300/60 shrink-0">CAM</span>
+            <span className="text-[8px] font-mono uppercase tracking-widest text-purple-300/60 shrink-0">LIVE</span>
             <input
               type="range"
               min={0}
@@ -508,28 +533,36 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
                 });
               }}
               className="flex-1 h-1.5 accent-purple-500 bg-zinc-900 rounded-sm cursor-col-resize"
-              title="Crossfade CAM ↔ MEM"
+              title="Blend the live source and the clip"
+              aria-label="Blend live source and clip"
             />
-            <span className="text-[8px] font-mono uppercase tracking-widest text-purple-300/60 shrink-0">MEM</span>
+            <span className="text-[8px] font-mono uppercase tracking-widest text-purple-300/60 shrink-0">CLIP</span>
           </div>
         </div>
 
-        {/* CAM sub-source: a real capture device, or a screen/window grabbed
-            via getDisplayMedia. SCREEN is how a scrcpy-mirrored Quest (or any
-            window / capture card) gets piped in without OBS. The SCREEN click
-            is the user gesture getDisplayMedia requires. */}
-        {state.sourceType === 'camera' && (
+        {/* Unified source grid — one-click flip between CLIP (the loaded clip /
+            library media) and every live + generative source. Always visible;
+            the per-source settings further down are gated to the active source. */}
           <div className="space-y-1.5">
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-3 gap-1.5">
               <TogglePad
+                compact
+                label="CLIP"
+                active={state.sourceType === 'clip'}
+                onClick={() => updateState({ sourceType: 'clip', sourceBlend: 1 })}
+                highlight="purple"
+              />
+              <TogglePad
+                compact
                 label="DEVICE"
-                active={(state.cameraSource ?? 'device') === 'device'}
+                active={state.sourceType === 'camera' && (state.cameraSource ?? 'device') === 'device'}
                 onClick={() => updateState({ sourceType: 'camera', sourceBlend: 0, cameraSource: 'device' })}
                 highlight="purple"
               />
               <TogglePad
+                compact
                 label="SCREEN"
-                active={state.cameraSource === 'screen'}
+                active={state.sourceType === 'camera' && state.cameraSource === 'screen'}
                 onClick={() => updateState({
                   sourceType: 'camera',
                   sourceBlend: 0,
@@ -539,8 +572,9 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
                 highlight="purple"
               />
               <TogglePad
+                compact
                 label="delinQuest"
-                active={state.cameraSource === 'quest'}
+                active={state.sourceType === 'camera' && state.cameraSource === 'quest'}
                 onClick={() => updateState({
                   sourceType: 'camera',
                   sourceBlend: 0,
@@ -550,8 +584,9 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
                 highlight="purple"
               />
               <TogglePad
+                compact
                 label="STITCH"
-                active={state.cameraSource === 'queststitch'}
+                active={state.sourceType === 'camera' && state.cameraSource === 'queststitch'}
                 onClick={() => updateState({
                   sourceType: 'camera',
                   sourceBlend: 0,
@@ -561,8 +596,9 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
                 highlight="purple"
               />
               <TogglePad
+                compact
                 label="CYMATICS"
-                active={state.cameraSource === 'cymatics'}
+                active={state.sourceType === 'camera' && state.cameraSource === 'cymatics'}
                 onClick={() => updateState({
                   sourceType: 'camera',
                   sourceBlend: 0,
@@ -577,8 +613,9 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
                   so this chip can be restored if the maximal-look Unity path is
                   ever wanted again. */}
               <TogglePad
+                compact
                 label="KINECT"
-                active={state.cameraSource === 'akvj3d'}
+                active={state.sourceType === 'camera' && state.cameraSource === 'akvj3d'}
                 onClick={() => updateState({
                   sourceType: 'camera',
                   sourceBlend: 0,
@@ -588,8 +625,9 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
                 highlight="purple"
               />
               <TogglePad
+                compact
                 label="DEPTH"
-                active={state.cameraSource === 'depthcloud'}
+                active={state.sourceType === 'camera' && state.cameraSource === 'depthcloud'}
                 onClick={() => updateState({
                   sourceType: 'camera',
                   sourceBlend: 0,
@@ -599,8 +637,9 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
                 highlight="purple"
               />
               <TogglePad
+                compact
                 label="SPECTRA"
-                active={state.cameraSource === 'spectra'}
+                active={state.sourceType === 'camera' && state.cameraSource === 'spectra'}
                 onClick={() => updateState({
                   sourceType: 'camera',
                   sourceBlend: 0,
@@ -610,8 +649,9 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
                 highlight="purple"
               />
               <TogglePad
+                compact
                 label="SHADER"
-                active={state.cameraSource === 'shader'}
+                active={state.sourceType === 'camera' && state.cameraSource === 'shader'}
                 onClick={() => updateState({
                   sourceType: 'camera',
                   sourceBlend: 0,
@@ -621,12 +661,25 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
                 highlight="purple"
               />
               <TogglePad
-                label="ASCII"
-                active={state.cameraSource === 'asciiline'}
+                compact
+                label="QUANTUM"
+                active={state.sourceType === 'camera' && state.cameraSource === 'quantum'}
                 onClick={() => updateState({
                   sourceType: 'camera',
                   sourceBlend: 0,
-                  cameraSource: 'asciiline',
+                  cameraSource: 'quantum',
+                  cameraReinit: (state.cameraReinit ?? 0) + 1,
+                })}
+                highlight="purple"
+              />
+              <TogglePad
+                compact
+                label="GESTURECAM"
+                active={state.sourceType === 'camera' && state.cameraSource === 'gesturecam'}
+                onClick={() => updateState({
+                  sourceType: 'camera',
+                  sourceBlend: 0,
+                  cameraSource: 'gesturecam',
                   cameraReinit: (state.cameraReinit ?? 0) + 1,
                 })}
                 highlight="purple"
@@ -634,6 +687,7 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
             </div>
             <div className="flex items-center gap-2">
               <TogglePad
+                compact
                 label="GESTURE"
                 active={state.gestureControl ?? false}
                 onClick={() => updateState({ gestureControl: !(state.gestureControl ?? false) })}
@@ -643,27 +697,11 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
                 Webcam body pose to the control bus. Runs alongside any source.
               </span>
             </div>
-            {(state.cameraSource ?? 'device') === 'device' && (
-              <div className="flex flex-col gap-1">
-                <label htmlFor="vj-cam-device" className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">
-                  Camera device
-                </label>
-                <select
-                  id="vj-cam-device"
-                  name="vj-cam-device"
-                  value={state.cameraDeviceId ?? ''}
-                  onChange={(e) => updateState({ cameraDeviceId: e.target.value || null, cameraReinit: (state.cameraReinit ?? 0) + 1 })}
-                  className="bg-black/40 border border-zinc-800 rounded px-2 py-1 text-[10px] font-mono text-zinc-200 focus:border-purple-500/50 outline-none"
-                >
-                  <option value="">Default camera</option>
-                  {videoDevices.map((d, i) => (
-                    <option key={d.deviceId || i} value={d.deviceId}>
-                      {d.label || `Camera ${i + 1}`}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
+
+            {/* Per-source settings — only for the active live/generative source
+                (hidden when CLIP is the source). */}
+            {state.sourceType === 'camera' && (
+            <>
             {state.cameraSource === 'screen' && (
               <button
                 type="button"
@@ -773,7 +811,7 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
                   <TogglePad label="FERRO" active={state.cymaticsMode === 'landscape-ferrofluid'} onClick={() => updateState({ cymaticsMode: 'landscape-ferrofluid' })} highlight="purple" />
                 </div>
                 <p className="text-[8px] font-mono text-zinc-600 leading-snug">
-                  Reflective black-chrome visual, audio-reactive. Mix it against a clip with the CAM↔MEM crossfader; all DECK effects apply.
+                  Reflective black-chrome visual, audio-reactive. Mix it against a clip with the LIVE/CLIP blend; all DECK effects apply.
                 </p>
               </div>
             )}
@@ -806,7 +844,7 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
                     name="vj-spectra-theme"
                     value={state.spectraTheme ?? 'mel-spectrogram'}
                     onChange={(e) => updateState({ spectraTheme: e.target.value })}
-                    className="bg-black/40 border border-zinc-800 rounded px-2 py-1 text-[10px] font-mono text-zinc-200 focus:border-purple-500/50 outline-none"
+                    className="bg-zinc-800 border border-zinc-500 rounded px-2 py-1 text-[10px] font-mono text-zinc-100 focus:border-purple-400 outline-none"
                   >
                     {SPECTRA_THEMES.map((t) => (
                       <option key={t.id} value={t.id}>{t.name}</option>
@@ -853,10 +891,27 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
                     name="vj-shader-preset"
                     value={state.shaderId ?? 'yotta'}
                     onChange={(e) => updateState({ shaderId: e.target.value })}
-                    className="bg-black/40 border border-zinc-800 rounded px-2 py-1 text-[10px] font-mono text-zinc-200 focus:border-purple-500/50 outline-none"
+                    className="bg-zinc-800 border border-zinc-500 rounded px-2 py-1 text-[10px] font-mono text-zinc-100 focus:border-purple-400 outline-none"
                   >
                     {SHADER_PRESETS.map((p) => (
                       <option key={p.id} value={p.id}>{p.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label htmlFor="vj-shader-material" className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">
+                    Material
+                  </label>
+                  <select
+                    id="vj-shader-material"
+                    name="vj-shader-material"
+                    value={state.shaderMaterial ?? 0}
+                    onChange={(e) => updateState({ shaderMaterial: parseInt(e.target.value, 10) })}
+                    title="Shading style for the 3D fractal shaders"
+                    className="bg-zinc-800 border border-zinc-500 rounded px-2 py-1 text-[10px] font-mono text-zinc-100 focus:border-purple-400 outline-none"
+                  >
+                    {SHADER_MATERIALS.map((m, i) => (
+                      <option key={m} value={i}>{m}</option>
                     ))}
                   </select>
                 </div>
@@ -876,48 +931,151 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
                     className="w-full accent-purple-500"
                   />
                 </div>
+                {/* Per-preset editable params: a slider plus the audio band that
+                    pushes it (OFF = manual). */}
+                {(SHADER_PRESETS.find((p) => p.id === (state.shaderId ?? 'yotta'))?.params ?? []).map((pm) => {
+                  const key = `${state.shaderId ?? 'yotta'}:${pm.id}`;
+                  const val = state.shaderParams?.[key] ?? pm.default;
+                  const band = state.shaderParamAudio?.[key] ?? pm.audio ?? 'none';
+                  const sid = `shader-${pm.id}`;
+                  return (
+                    <div key={pm.id} className="flex items-center gap-2">
+                      <label htmlFor={sid} className="w-14 shrink-0 text-[8px] font-mono uppercase tracking-widest text-zinc-500">{pm.label}</label>
+                      <input
+                        id={sid}
+                        name={sid}
+                        type="range"
+                        min={pm.min}
+                        max={pm.max}
+                        step={pm.step}
+                        value={val}
+                        onChange={(e) => updateState({ shaderParams: { ...(state.shaderParams ?? {}), [key]: parseFloat(e.target.value) } })}
+                        className="flex-1 accent-purple-500"
+                      />
+                      <label htmlFor={`${sid}-aud`} className="sr-only">{pm.label} audio band</label>
+                      <select
+                        id={`${sid}-aud`}
+                        name={`${sid}-aud`}
+                        value={band}
+                        onChange={(e) => updateState({ shaderParamAudio: { ...(state.shaderParamAudio ?? {}), [key]: e.target.value as ShaderAudioBand } })}
+                        title={`${pm.label}: audio band that drives this parameter`}
+                        className="shrink-0 w-16 bg-zinc-800 border border-zinc-500 rounded px-1 py-0.5 text-[8px] font-mono text-zinc-100 outline-none"
+                      >
+                        <option value="none">OFF</option>
+                        <option value="bass">BASS</option>
+                        <option value="mid">MID</option>
+                        <option value="high">HIGH</option>
+                        <option value="volume">VOL</option>
+                      </select>
+                    </div>
+                  );
+                })}
                 <p className="text-[8px] font-mono text-zinc-600 leading-snug">
                   Fullscreen GLSL shader as a generative source, its camera driven by the VJ's live audio energy. {SHADER_PRESETS.find((p) => p.id === (state.shaderId ?? 'yotta'))?.attribution}
                 </p>
               </div>
             )}
-            {state.cameraSource === 'asciiline' && (
+            {state.cameraSource === 'quantum' && (
               <div className="space-y-1.5">
+                {/* Geometry morph targets */}
+                <div className="flex flex-col gap-1">
+                  <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">Geometry</span>
+                  <div className="grid grid-cols-4 gap-1">
+                    {QUANTUM_GEOMETRY_NAMES.map((name, i) => {
+                      const on = (state.quantumShape ?? 0) === i;
+                      return (
+                        <button
+                          key={name}
+                          type="button"
+                          onClick={() => updateState({ quantumShape: i })}
+                          title={name}
+                          aria-label={`Morph to ${name}`}
+                          aria-pressed={on}
+                          className={`py-1 rounded border text-[8px] font-mono uppercase tracking-wide transition-colors ${
+                            on ? 'border-purple-400 bg-purple-500/25 text-purple-100' : 'border-zinc-600 bg-zinc-800 text-zinc-400 hover:text-zinc-100'
+                          }`}
+                        >
+                          {name.split(' ')[1] ?? name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                {/* Palette */}
+                <div className="flex flex-col gap-1">
+                  <label htmlFor="vj-quantum-palette" className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">Palette</label>
+                  <select
+                    id="vj-quantum-palette"
+                    name="vj-quantum-palette"
+                    value={state.quantumPalette ?? -1}
+                    onChange={(e) => updateState({ quantumPalette: parseInt(e.target.value, 10) })}
+                    className="bg-zinc-800 border border-zinc-500 rounded px-2 py-1 text-[10px] font-mono text-zinc-100 focus:border-purple-400 outline-none"
+                  >
+                    <option value={-1}>Auto (follow shape)</option>
+                    {QUANTUM_PALETTES.map((p, i) => (
+                      <option key={p} value={i}>{p}</option>
+                    ))}
+                  </select>
+                </div>
+                {/* Master audio drive */}
                 <div className="space-y-0.5">
-                  <label htmlFor="ascii-cols" className="block text-[8px] font-mono uppercase tracking-widest text-zinc-500">Density (cols)</label>
+                  <label htmlFor="vj-quantum-drive" className="block text-[8px] font-mono uppercase tracking-widest text-zinc-500">Audio Drive</label>
                   <input
-                    id="ascii-cols"
-                    name="ascii-cols"
+                    id="vj-quantum-drive"
+                    name="vj-quantum-drive"
                     type="range"
-                    min={40}
-                    max={320}
-                    step={1}
-                    value={state.asciiCols ?? 160}
-                    onChange={(e) => updateState({ asciiCols: parseInt(e.target.value, 10) })}
+                    min={0}
+                    max={2}
+                    step={0.05}
+                    value={state.quantumAudioDrive ?? 1}
+                    onChange={(e) => updateState({ quantumAudioDrive: parseFloat(e.target.value) })}
                     className="w-full accent-purple-500"
                   />
                 </div>
-                <div className="grid grid-cols-2 gap-1 items-center">
-                  <TogglePad
-                    label="Mono"
-                    active={state.asciiMono ?? false}
-                    onClick={() => updateState({ asciiMono: !(state.asciiMono ?? false) })}
-                    highlight="purple"
-                  />
-                  <div className="flex items-center gap-1.5">
-                    <label htmlFor="ascii-accent" className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">Accent</label>
-                    <input
-                      id="ascii-accent"
-                      name="ascii-accent"
-                      type="color"
-                      value={state.asciiAccent ?? '#00ff41'}
-                      onChange={(e) => updateState({ asciiAccent: e.target.value })}
-                      className="h-6 w-8 bg-transparent border border-zinc-800 rounded cursor-pointer"
-                    />
+                {/* Grouped params: slider + the audio band that pushes it (OFF = manual). */}
+                {QUANTUM_GROUPS.map((group) => (
+                  <div key={group} className="space-y-1">
+                    <span className="block text-[8px] font-mono uppercase tracking-widest text-purple-300/60">{group}</span>
+                    {QUANTUM_PARAMS.filter((pm) => pm.group === group).map((pm) => {
+                      const val = state.quantumParams?.[pm.id] ?? pm.default;
+                      const band = state.quantumParamAudio?.[pm.id] ?? pm.audio ?? 'none';
+                      const sid = `quantum-${pm.id}`;
+                      return (
+                        <div key={pm.id} className="flex items-center gap-2">
+                          <label htmlFor={sid} className="w-14 shrink-0 text-[8px] font-mono uppercase tracking-widest text-zinc-500" title={pm.label}>{pm.label}</label>
+                          <input
+                            id={sid}
+                            name={sid}
+                            type="range"
+                            min={pm.min}
+                            max={pm.max}
+                            step={pm.step}
+                            value={val}
+                            onChange={(e) => updateState({ quantumParams: { ...(state.quantumParams ?? {}), [pm.id]: parseFloat(e.target.value) } })}
+                            className="flex-1 accent-purple-500"
+                          />
+                          <label htmlFor={`${sid}-aud`} className="sr-only">{pm.label} audio band</label>
+                          <select
+                            id={`${sid}-aud`}
+                            name={`${sid}-aud`}
+                            value={band}
+                            onChange={(e) => updateState({ quantumParamAudio: { ...(state.quantumParamAudio ?? {}), [pm.id]: e.target.value as QuantumAudioBand } })}
+                            title={`${pm.label}: audio band that drives this parameter`}
+                            className="shrink-0 w-16 bg-zinc-800 border border-zinc-500 rounded px-1 py-0.5 text-[8px] font-mono text-zinc-100 outline-none"
+                          >
+                            <option value="none">OFF</option>
+                            <option value="bass">BASS</option>
+                            <option value="mid">MID</option>
+                            <option value="high">HIGH</option>
+                            <option value="volume">VOL</option>
+                          </select>
+                        </div>
+                      );
+                    })}
                   </div>
-                </div>
+                ))}
                 <p className="text-[8px] font-mono text-zinc-600 leading-snug">
-                  Re-renders the loaded clip (else the webcam) as live GPU ASCII. Mono uses the accent colour; otherwise each glyph keeps its source colour. Ported from ASCILINE (MIT, no advertising use).
+                  Morphing sacred-geometry lattice. Every param is audio-bindable (per-row band) and surfaced in VJState, so MIDI / SLIDE / SWAY can drive it too.
                 </p>
               </div>
             )}
@@ -945,7 +1103,7 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
             )}
             {state.cameraSource === 'akvj' && (
               <p className="text-[8px] font-mono text-zinc-600 leading-snug">
-                A Unity desktop visual (e.g. the Azure-Kinect depth VFX app) streamed in over the akvj bridge. Run the app with GantasmoAkvjStreamer; it auto-connects. Mix it with the CAM↔MEM crossfader; all DECK effects apply.
+                A Unity desktop visual (e.g. the Azure-Kinect depth VFX app) streamed in over the akvj bridge. Run the app with GantasmoAkvjStreamer; it auto-connects. Mix it with the LIVE/CLIP blend; all DECK effects apply.
               </p>
             )}
             {state.cameraSource === 'akvj' && akvjError && (
@@ -985,7 +1143,7 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
                   </span>
                 </div>
                 <p className="text-[8px] font-mono text-zinc-600 leading-snug">
-                  Native Azure-Kinect point cloud, no Unity: theDAW spawns a headless capture sidecar, the cloud renders here in three.js, so all DECK effects and the CAM↔MEM crossfader apply to the live geometry. First connect builds a one-time point map (a few seconds).
+                  Native Azure-Kinect point cloud, no Unity: theDAW spawns a headless capture sidecar, the cloud renders here in three.js, so all DECK effects and the LIVE/CLIP blend apply to the live geometry. First connect builds a one-time point map (a few seconds).
                 </p>
                 {akvj3dError && (
                   <p className="text-[8px] font-mono text-rose-300/80 leading-snug">{akvj3dError}</p>
@@ -1066,21 +1224,68 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
                     ))}
                   </div>
                 </div>
+                <div className="flex items-center gap-1">
+                  <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">Orbit</span>
+                  <TogglePad
+                    label={state.akvjOrbitOn === false ? 'OFF' : 'ON'}
+                    active={state.akvjOrbitOn !== false}
+                    onClick={() => updateState({ akvjOrbitOn: !(state.akvjOrbitOn ?? true) })}
+                    highlight="purple"
+                  />
+                  <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">Lock</span>
+                  <TogglePad
+                    label={state.akvjLockOn === false ? 'OFF' : 'ON'}
+                    active={state.akvjLockOn !== false}
+                    onClick={() => updateState({ akvjLockOn: !(state.akvjLockOn ?? true) })}
+                    highlight="purple"
+                  />
+                  <button
+                    onClick={() =>
+                      updateState({
+                        akvjCamX: 0,
+                        akvjCamY: 0,
+                        akvjCamZ: 0,
+                        akvjRotX: 0,
+                        akvjRotY: 0,
+                        akvjRotZ: 0,
+                        akvjDistance: 1,
+                        akvjRecenterNonce: (state.akvjRecenterNonce ?? 0) + 1,
+                      })
+                    }
+                    title="Reframe the cloud to fill the output dead-center"
+                    className="h-7 px-2 text-[10px] tracking-widest uppercase font-mono border transition-all select-none rounded-sm bg-black border-zinc-800 hover:border-zinc-500 text-zinc-600 hover:text-zinc-400"
+                  >
+                    RECENTER
+                  </button>
+                </div>
                 <div className="grid grid-cols-2 gap-x-2 gap-y-1">
                   {([
-                    { id: 'akvj-speed', label: 'Speed', min: 0, max: 2, step: 0.01, value: state.akvjSpeed ?? 1, set: (v: number) => updateState({ akvjSpeed: v }) },
-                    { id: 'akvj-spin', label: 'Orbit ±', min: -1, max: 1, step: 0.01, value: state.akvjSpin ?? 0, set: (v: number) => updateState({ akvjSpin: v }) },
-                    { id: 'akvj-distance', label: 'Distance', min: 0.4, max: 2.5, step: 0.01, value: state.akvjDistance ?? 1, set: (v: number) => updateState({ akvjDistance: v }) },
-                    { id: 'akvj-size', label: 'Size', min: 0.2, max: 4, step: 0.01, value: state.akvjSize ?? 1, set: (v: number) => updateState({ akvjSize: v }) },
-                    { id: 'akvj-density', label: 'Amount', min: 0.05, max: 1, step: 0.01, value: state.akvjDensity ?? 1, set: (v: number) => updateState({ akvjDensity: v }) },
-                    { id: 'akvj-bright', label: 'Bright', min: 0, max: 2, step: 0.01, value: state.akvjBright ?? 1, set: (v: number) => updateState({ akvjBright: v }) },
-                    { id: 'akvj-bloom', label: 'Bloom', min: 0, max: 2, step: 0.01, value: state.akvjBloom ?? 0.5, set: (v: number) => updateState({ akvjBloom: v }) },
-                    { id: 'akvj-wind', label: 'Wind', min: 0, max: 1, step: 0.01, value: state.akvjWind ?? 0, set: (v: number) => updateState({ akvjWind: v }) },
-                    { id: 'akvj-trails', label: 'Trails', min: 0, max: 0.95, step: 0.01, value: state.akvjTrails ?? 0, set: (v: number) => updateState({ akvjTrails: v }) },
-                    { id: 'akvj-renderfps', label: 'Render FPS', min: 12, max: 60, step: 1, value: state.akvjRenderFps ?? 60, set: (v: number) => updateState({ akvjRenderFps: v }) },
+                    { id: 'akvj-speed', stateKey: 'akvjSpeed', label: 'Speed', min: 0, max: 2, step: 0.01, value: state.akvjSpeed ?? 1, set: (v: number) => updateState({ akvjSpeed: v }) },
+                    { id: 'akvj-spin', stateKey: 'akvjSpin', label: 'Orbit ±', min: -1, max: 1, step: 0.01, value: state.akvjSpin ?? 0, set: (v: number) => updateState({ akvjSpin: v }) },
+                    { id: 'akvj-distance', stateKey: 'akvjDistance', label: 'Distance', min: 0.4, max: 2.5, step: 0.01, value: state.akvjDistance ?? 1, set: (v: number) => updateState({ akvjDistance: v }) },
+                    { id: 'akvj-size', stateKey: 'akvjSize', label: 'Size', min: 0.2, max: 4, step: 0.01, value: state.akvjSize ?? 1, set: (v: number) => updateState({ akvjSize: v }) },
+                    { id: 'akvj-density', stateKey: 'akvjDensity', label: 'Amount', min: 0.05, max: 1, step: 0.01, value: state.akvjDensity ?? 1, set: (v: number) => updateState({ akvjDensity: v }) },
+                    { id: 'akvj-bright', stateKey: 'akvjBright', label: 'Bright', min: 0, max: 2, step: 0.01, value: state.akvjBright ?? 1, set: (v: number) => updateState({ akvjBright: v }) },
+                    { id: 'akvj-bloom', stateKey: 'akvjBloom', label: 'Bloom', min: 0, max: 2, step: 0.01, value: state.akvjBloom ?? 0.5, set: (v: number) => updateState({ akvjBloom: v }) },
+                    { id: 'akvj-wind', stateKey: 'akvjWind', label: 'Wind', min: 0, max: 1, step: 0.01, value: state.akvjWind ?? 0, set: (v: number) => updateState({ akvjWind: v }) },
+                    { id: 'akvj-trails', stateKey: 'akvjTrails', label: 'Trails', min: 0, max: 0.95, step: 0.01, value: state.akvjTrails ?? 0, set: (v: number) => updateState({ akvjTrails: v }) },
+                    { id: 'akvj-renderfps', stateKey: 'akvjRenderFps', label: 'Render FPS', min: 12, max: 60, step: 1, value: state.akvjRenderFps ?? 60, set: (v: number) => updateState({ akvjRenderFps: v }) },
+                    { id: 'akvj-camx', stateKey: 'akvjCamX', label: 'Move X', min: -2, max: 2, step: 0.01, value: state.akvjCamX ?? 0, set: (v: number) => updateState({ akvjCamX: v }) },
+                    { id: 'akvj-camy', stateKey: 'akvjCamY', label: 'Move Y', min: -2, max: 2, step: 0.01, value: state.akvjCamY ?? 0, set: (v: number) => updateState({ akvjCamY: v }) },
+                    { id: 'akvj-camz', stateKey: 'akvjCamZ', label: 'Move Z', min: -3, max: 3, step: 0.01, value: state.akvjCamZ ?? 0, set: (v: number) => updateState({ akvjCamZ: v }) },
+                    { id: 'akvj-rotx', stateKey: 'akvjRotX', label: 'Rot X', min: -3.1416, max: 3.1416, step: 0.01, value: state.akvjRotX ?? 0, set: (v: number) => updateState({ akvjRotX: v }) },
+                    { id: 'akvj-roty', stateKey: 'akvjRotY', label: 'Rot Y', min: -3.1416, max: 3.1416, step: 0.01, value: state.akvjRotY ?? 0, set: (v: number) => updateState({ akvjRotY: v }) },
+                    { id: 'akvj-rotz', stateKey: 'akvjRotZ', label: 'Rot Z', min: -3.1416, max: 3.1416, step: 0.01, value: state.akvjRotZ ?? 0, set: (v: number) => updateState({ akvjRotZ: v }) },
                   ]).map((c) => (
                     <div key={c.id} className="space-y-0.5">
-                      <label htmlFor={c.id} className="block text-[8px] font-mono uppercase tracking-widest text-zinc-500">{c.label}</label>
+                      <label
+                        htmlFor={c.id}
+                        onDoubleClick={() => c.set((DEFAULT_VJ_STATE as any)[c.stateKey])}
+                        title="Double click to reset"
+                        className="block text-[8px] font-mono uppercase tracking-widest text-zinc-500 cursor-pointer"
+                      >
+                        {c.label}
+                      </label>
                       <input
                         id={c.id}
                         name={c.id}
@@ -1097,8 +1302,50 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
                 </div>
               </>
             )}
+            {state.cameraSource === 'gesturecam' && (
+              <>
+                <div className="space-y-1">
+                  <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">Gesture Effect</span>
+                  <div className="grid grid-cols-5 gap-1">
+                    {(['auto', 'fire', 'melt', 'warp', 'bloom'] as const).map((fx) => (
+                      <TogglePad
+                        key={fx}
+                        label={fx.toUpperCase()}
+                        active={(state.gesturecamEffect ?? 'auto') === fx}
+                        onClick={() => updateState({ gesturecamEffect: fx })}
+                        highlight="purple"
+                      />
+                    ))}
+                  </div>
+                </div>
+                <div className="space-y-0.5">
+                  <label htmlFor="gesturecam-amount" className="block text-[8px] font-mono uppercase tracking-widest text-zinc-500">Amount</label>
+                  <input
+                    id="gesturecam-amount"
+                    name="gesturecam-amount"
+                    type="range"
+                    min={0}
+                    max={1.4}
+                    step={0.01}
+                    value={state.gesturecamAmount ?? 0.82}
+                    onChange={(e) => updateState({ gesturecamAmount: parseFloat(e.target.value) })}
+                    className="w-full accent-purple-500"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">Rig</span>
+                  <TogglePad
+                    label={state.gesturecamRig === false ? 'OFF' : 'ON'}
+                    active={state.gesturecamRig !== false}
+                    onClick={() => updateState({ gesturecamRig: !(state.gesturecamRig ?? true) })}
+                    highlight="purple"
+                  />
+                </div>
+              </>
+            )}
+            </>
+            )}
           </div>
-        )}
 
         {/* Canvas Format */}
         <div className="flex flex-col gap-1.5">
@@ -1641,6 +1888,37 @@ function ControlDeckImpl({ state, updateState, reset, hasCameraError, questState
             <Fader paramKey="fxSepia" label="Sepia" min={0} max={1} step={0.01} value={state.fxSepia ?? 0} onChange={(v: number) => updateState({ fxSepia: v })} />
             <Fader paramKey="fxGrayscale" label="Grayscale" min={0} max={1} step={0.01} value={state.fxGrayscale ?? 0} onChange={(v: number) => updateState({ fxGrayscale: v })} />
             <Fader paramKey="fxBlur" label="Soft Blur" min={0} max={1} step={0.01} value={state.fxBlur ?? 0} onChange={(v: number) => updateState({ fxBlur: v })} />
+          </div>
+
+          {/* ASCII -- GPU post effect: re-renders the FINAL composited frame
+              (whatever the source is) as glyphs. Lands in the recording too. */}
+          <div className="mt-3 space-y-1 pt-2 border-t border-emerald-900/20">
+            <span className="text-[8px] font-mono uppercase tracking-widest text-emerald-500/70 block mb-1">FX · ASCII</span>
+            <TogglePad
+              label={state.asciiFx ? 'ASCII ON' : 'ASCII'}
+              active={state.asciiFx ?? false}
+              onClick={() => updateState({ asciiFx: !(state.asciiFx ?? false) })}
+              highlight="cyan"
+            />
+            {state.asciiFx && (
+              <>
+                <Fader paramKey="asciiCols" label="Density (cols)" min={40} max={320} step={1} value={state.asciiCols ?? 160} onChange={(v: number) => updateState({ asciiCols: Math.round(v) })} />
+                <div className="grid grid-cols-2 gap-1 items-center mt-1">
+                  <TogglePad label="Mono" active={state.asciiMono ?? false} onClick={() => updateState({ asciiMono: !(state.asciiMono ?? false) })} highlight="cyan" />
+                  <div className="flex items-center gap-1.5">
+                    <label htmlFor="ascii-accent" className="text-[8px] font-mono uppercase tracking-widest text-zinc-500">Accent</label>
+                    <input
+                      id="ascii-accent"
+                      name="ascii-accent"
+                      type="color"
+                      value={state.asciiAccent ?? '#00ff41'}
+                      onChange={(e) => updateState({ asciiAccent: e.target.value })}
+                      className="h-6 w-8 bg-transparent border border-zinc-800 rounded cursor-pointer"
+                    />
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         </section>
       </div>

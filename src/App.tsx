@@ -10,8 +10,11 @@ import { useDepthCloud } from './useDepthCloud';
 import { useCymatics } from './useCymatics';
 import { useSpectra } from './useSpectra';
 import { useShader } from './useShader';
-import { useAsciiline } from './useAsciiline';
+import { useQuantumLattice } from './useQuantumLattice';
+import { resolveQuantumParams } from './quantum/QuantumLatticeEngine';
+import { resolveShaderParams } from './shader/shaderPresets';
 import { useGesture } from './useGesture';
+import { useGesturecam } from './useGesturecam';
 import { useAudioAnalyzer } from './useAudioAnalyzer';
 import { backendBase } from './libraryUpload';
 import { useMidi } from './useMidi';
@@ -60,6 +63,14 @@ const loadSavedState = (): VJState => {
       // Clean up dynamic or temporary runtime attributes to avoid bad states
       parsed.recording = false;
       parsed.layoutMode = 'standard'; // Always reset back to standard to prevent being trapped on refresh
+
+      // The 'asciiline' SOURCE became the asciiFx post-effect; a state saved
+      // before that change would otherwise fall through to the device-camera
+      // boot path. Migrate it and keep the ASCII look the user had.
+      if (parsed.cameraSource === 'asciiline') {
+        parsed.cameraSource = 'device';
+        parsed.asciiFx = true;
+      }
 
       // Drop session-only blob URLs which won't survive refresh.
       if (parsed.clipUrl && parsed.clipUrl.startsWith('blob:')) {
@@ -156,6 +167,15 @@ export default function App() {
     trails: vjState.akvjTrails ?? 0,
     distance: vjState.akvjDistance ?? 1,
     renderFps: vjState.akvjRenderFps ?? 60,
+    orbitOn: vjState.akvjOrbitOn ?? true,
+    lockOn: vjState.akvjLockOn ?? true,
+    camX: vjState.akvjCamX ?? 0,
+    camY: vjState.akvjCamY ?? 0,
+    camZ: vjState.akvjCamZ ?? 0,
+    rotX: vjState.akvjRotX ?? 0,
+    rotY: vjState.akvjRotY ?? 0,
+    rotZ: vjState.akvjRotZ ?? 0,
+    recenterNonce: vjState.akvjRecenterNonce ?? 0,
   };
 
   const akvj3dFeed = useAkvj3d(
@@ -167,6 +187,9 @@ export default function App() {
 
   // Monocular-depth source — turns the loaded clip (else the webcam) into a live
   // point cloud via in-browser Depth-Anything, through the same renderer/styles.
+  // depthSourceRef yields the live deck clip element (populated after useMedia
+  // below) so depth samples the SAME video the deck plays, in sync.
+  const depthSourceRef = useRef<(() => HTMLVideoElement | null) | null>(null);
   const depthCloudFeed = useDepthCloud(
     vjState.sourceType === 'camera' && vjState.cameraSource === 'depthcloud',
     getAudioLevels,
@@ -174,6 +197,7 @@ export default function App() {
     akvjParams,
     vjState.clipUrl ?? null,
     { precision: vjState.depthPrecision ?? 'auto', res: vjState.depthRes ?? 320, fps: vjState.depthFps ?? 8 },
+    () => depthSourceRef.current?.() ?? null,
   );
 
   // SPECTRA-RIDER source — a 3D audio spectrogram-terrain visual, fed the VJ's
@@ -199,30 +223,50 @@ export default function App() {
   // Generic GLSL shader source — a fullscreen atzedent-style fragment shader
   // (yotta seeds the library) rendered as a generative source, its camera scrub
   // accelerated by the VJ's live audio energy. Mixable like any other source.
+  const shaderParamConfig = useMemo(
+    () => resolveShaderParams(vjState.shaderId ?? 'yotta', vjState.shaderParams, vjState.shaderParamAudio),
+    [vjState.shaderId, vjState.shaderParams, vjState.shaderParamAudio],
+  );
   const shaderFeed = useShader(
     vjState.sourceType === 'camera' && vjState.cameraSource === 'shader',
     getAudioLevels,
     vjState.shaderId ?? 'yotta',
     vjState.shaderAudioDrive ?? 1,
+    shaderParamConfig,
+    vjState.shaderMaterial ?? 0,
   );
 
-  // ASCII source — the upstream frame (loaded clip, else webcam) re-rendered as
-  // live GPU ASCII glyphs (a port of ASCILINE). Mixable like any other source.
-  const asciiSettings = {
-    cols: vjState.asciiCols ?? 160,
-    mono: vjState.asciiMono ?? false,
-    accent: vjState.asciiAccent ?? '#00ff41',
-  };
-  const asciilineFeed = useAsciiline(
-    vjState.sourceType === 'camera' && vjState.cameraSource === 'asciiline',
+  // Quantum Lattice source — the morphing sacred-geometry node/beam lattice
+  // (Torus / Cube / Star / Cage), audio-reactive, mixable like any other source.
+  // The full param surface (with per-param audio bands) lives in VJState so MIDI/
+  // SLIDE/SWAY can bind it; resolve it against the declared defaults each change.
+  const quantumParamConfig = useMemo(
+    () => resolveQuantumParams(vjState.quantumParams, vjState.quantumParamAudio),
+    [vjState.quantumParams, vjState.quantumParamAudio],
+  );
+  const quantumFeed = useQuantumLattice(
+    vjState.sourceType === 'camera' && vjState.cameraSource === 'quantum',
+    vjState.quantumShape ?? 0,
     getAudioLevels,
-    vjState.clipUrl ?? null,
-    asciiSettings,
+    quantumParamConfig,
+    vjState.quantumPalette ?? -1,
+    vjState.quantumAudioDrive ?? 1,
   );
 
   // Body-pose control: webcam MediaPipe pose -> six scalars forwarded to theDAW's
   // control bus. Control data only (no stream), runs alongside any visual source.
   useGesture(vjState.gestureControl ?? false);
+
+  // gesturecam visual source — the ported FaceViz engine (MediaPipe hand+pose ->
+  // fire/melt/warp/bloom compositor) as a canvas-captured MediaStream.
+  const gesturecamFeed = useGesturecam(
+    vjState.sourceType === 'camera' && vjState.cameraSource === 'gesturecam',
+    {
+      selectedEffect: vjState.gesturecamEffect ?? 'auto',
+      effectAmount: vjState.gesturecamAmount ?? 0.82,
+      showRig: vjState.gesturecamRig ?? true,
+    },
+  );
 
   const { videoRef, cameraVideoRef, clipVideoRef, error, isInitializing } = useMedia(
     vjState.sourceType,
@@ -238,8 +282,18 @@ export default function App() {
     depthCloudFeed.stream,
     spectraFeed.stream,
     shaderFeed.stream,
-    asciilineFeed.stream,
+    quantumFeed.stream,
+    gesturecamFeed.stream,
   );
+
+  // Hand depthcloud the live deck clip element when a clip is loaded, so it
+  // depthifies the SAME video the deck plays (in sync, no second decode); with
+  // no clip it falls back to its own webcam. We never pass cameraVideoRef, which
+  // can hold depthcloud's OWN output (a feedback loop).
+  depthSourceRef.current = () => {
+    const clip = clipVideoRef.current;
+    return clip && clip.videoWidth > 0 ? clip : null;
+  };
 
   // SA3 → VJ playback commands. The PlayerFooter in SA3 sends
   // { type: 'sa3-vj/playback', action: 'play' | 'pause' } when the
@@ -357,7 +411,7 @@ export default function App() {
       if (prev.videoBucket.some((c) => c.id === item.id)) {
         return { ...prev, ...base };
       }
-      const clip: VideoClip = { id: item.id, name, url: item.url, kind: 'video' };
+      const clip: VideoClip = { id: item.id, name, url: item.url, kind: 'video', thumbUrl: item.thumbUrl ?? null };
       return { ...prev, videoBucket: [...prev.videoBucket, clip], ...base };
     });
   }, [updateState]);
@@ -375,7 +429,9 @@ export default function App() {
       const bucket = prev.videoBucket.slice();
       const existing = bucket.findIndex((c) => c.id === item.id);
       const clip: VideoClip =
-        existing >= 0 ? bucket.splice(existing, 1)[0] : { id: item.id, name, url: item.url, kind: 'video' };
+        existing >= 0
+          ? bucket.splice(existing, 1)[0]
+          : { id: item.id, name, url: item.url, kind: 'video', thumbUrl: item.thumbUrl ?? null };
       const target = Math.max(0, Math.min(index, bucket.length));
       bucket.splice(target, 0, clip);
       return {
@@ -544,6 +600,7 @@ export default function App() {
       name: label.length > 25 ? `${label.slice(0, 21)}...` : label,
       url: rawUrl,
       kind,
+      thumbUrl: typeof item.thumbUrl === 'string' && item.thumbUrl ? item.thumbUrl : null,
     };
   };
 
@@ -822,7 +879,7 @@ export default function App() {
         next.activeClipId = activate.id;
         next.clipUrl = activate.url;
         next.clipLabel = activate.name;
-        next.clipKind = activate.kind ?? 'video';
+        next.clipKind = activate.kind === 'source' ? 'video' : activate.kind ?? 'video';
         next.sourceType = 'clip';
         if (autoReactive) next.audioReactive = true;
       }
@@ -852,7 +909,7 @@ export default function App() {
           if (!existing) return prev; // removed before the upload finished
           if (existing.url.startsWith('blob:')) staleBlob = existing.url;
           const videoBucket = prev.videoBucket.map((c) =>
-            c.id === clipId ? { ...c, url: up.mediaUrl } : c,
+            c.id === clipId ? { ...c, url: up.mediaUrl, thumbUrl: up.thumbUrl ?? c.thumbUrl ?? null } : c,
           );
           const patch: Partial<VJState> =
             prev.activeClipId === clipId ? { clipUrl: up.mediaUrl } : {};
@@ -938,6 +995,7 @@ export default function App() {
             onStagePoolItem={stagePoolItem}
             onStagePoolItemAt={stagePoolItemAt}
             onMoveClipToIndex={moveClipToIndex}
+            poolItems={pool.items}
           />
         </div>
       )}
@@ -1168,13 +1226,31 @@ export default function App() {
            flex flex-col z-40 shadow-[-10px_0_30px_rgba(0,0,0,0.8)] border-l border-cyan-900/40 transition-all duration-500 bg-[#111] overflow-hidden
          `}
       >
+        {/* Top bar: browser TABS (standard layout) + collapse. */}
         {vjState.layoutMode === 'standard' && (
-          <div className="flex items-center justify-between px-2 py-1 border-b border-zinc-800">
-            <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-500">Controls</span>
+          <div className="flex items-center gap-1 px-1.5 py-1 border-b border-zinc-800 shrink-0">
+            {(['sources', 'library'] as const).map((t) => {
+              const on = (vjState.vjBrowserTab ?? 'sources') === t;
+              return (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => updateState({ vjBrowserTab: t })}
+                  className={`px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-widest transition-colors ${
+                    on
+                      ? 'bg-cyan-500/20 text-cyan-100 shadow-[inset_0_0_0_1px_rgba(34,211,238,0.5)]'
+                      : 'text-zinc-500 hover:text-zinc-200'
+                  }`}
+                  aria-pressed={on}
+                >
+                  {t}
+                </button>
+              );
+            })}
             <button
               type="button"
               onClick={() => updateState({ rightPanelCollapsed: true })}
-              className="p-1 rounded text-zinc-500 hover:text-white hover:bg-zinc-800"
+              className="ml-auto p-1 rounded text-zinc-500 hover:text-white hover:bg-zinc-800"
               title="Collapse control panel"
               aria-label="Collapse control panel"
               aria-expanded
@@ -1183,83 +1259,67 @@ export default function App() {
             </button>
           </div>
         )}
-        {/* Library Pool — the media browser, moved into the right column. Drag a
-            clip straight onto a bank slot up top. */}
-        {vjState.layoutMode === 'standard' && (
-          <LibraryPool
-            items={pool.items}
-            loading={pool.loading}
-            error={pool.error}
-            refresh={pool.refresh}
-            stagedIds={stagedIds}
-            onStage={stagePoolItem}
-            onUnstage={unstagePoolItem}
-            collapsed={!!vjState.poolCollapsed}
-            onToggleCollapse={() => updateState({ poolCollapsed: !vjState.poolCollapsed })}
-          />
+
+        {/* Non-standard layouts (split / preview / fullscreen): whole deck, no tabs. */}
+        {vjState.layoutMode !== 'standard' && (
+          <div className="flex-1 min-h-0 overflow-hidden">
+            <ControlDeck region="all" {...controlDeckProps} />
+          </div>
         )}
-        {/* Live source monitor — reuses the already-decoded Quest/Cymatics
-            stream (no second decode). */}
-        {vjState.layoutMode === 'standard' && vjState.sourceType === 'camera' && vjState.cameraSource === 'quest' && questFeed.stream && (
-          <SourcePreview stream={questFeed.stream} label="Quest" />
+        {/* LIBRARY tab: the media browser; drag a clip onto a bank slot up top. */}
+        {vjState.layoutMode === 'standard' && (vjState.vjBrowserTab ?? 'sources') === 'library' && (
+          <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
+            <LibraryPool
+              items={pool.items}
+              loading={pool.loading}
+              error={pool.error}
+              refresh={pool.refresh}
+              stagedIds={stagedIds}
+              onStage={stagePoolItem}
+              onUnstage={unstagePoolItem}
+              collapsed={!!vjState.poolCollapsed}
+              onToggleCollapse={() => updateState({ poolCollapsed: !vjState.poolCollapsed })}
+            />
+          </div>
         )}
-        {vjState.layoutMode === 'standard' && vjState.sourceType === 'camera' && vjState.cameraSource === 'queststitch' && stitchFeed.stream && (
-          <SourcePreview stream={stitchFeed.stream} label="Quest Stitch" />
+        {/* SOURCES tab: live source monitors + the SOURCE / record-header deck. */}
+        {vjState.layoutMode === 'standard' && (vjState.vjBrowserTab ?? 'sources') === 'sources' && (
+          <>
+            {vjState.sourceType === 'camera' && vjState.cameraSource === 'quest' && questFeed.stream && (
+              <SourcePreview stream={questFeed.stream} label="Quest" />
+            )}
+            {vjState.sourceType === 'camera' && vjState.cameraSource === 'queststitch' && stitchFeed.stream && (
+              <SourcePreview stream={stitchFeed.stream} label="Quest Stitch" />
+            )}
+            {vjState.sourceType === 'camera' && vjState.cameraSource === 'cymatics' && cymaticsFeed.stream && (
+              <SourcePreview stream={cymaticsFeed.stream} label="Cymatics" />
+            )}
+            {vjState.sourceType === 'camera' && vjState.cameraSource === 'akvj' && akvjFeed.stream && (
+              <SourcePreview stream={akvjFeed.stream} label="AKVJ" />
+            )}
+            {vjState.sourceType === 'camera' && vjState.cameraSource === 'akvj3d' && akvj3dFeed.stream && (
+              <SourcePreview stream={akvj3dFeed.stream} label="KINECT" />
+            )}
+            {vjState.sourceType === 'camera' && vjState.cameraSource === 'depthcloud' && depthCloudFeed.stream && (
+              <SourcePreview stream={depthCloudFeed.stream} label="DEPTH" />
+            )}
+            {vjState.sourceType === 'camera' && vjState.cameraSource === 'spectra' && spectraFeed.stream && (
+              <SourcePreview stream={spectraFeed.stream} label="SPECTRA" />
+            )}
+            {vjState.sourceType === 'camera' && vjState.cameraSource === 'shader' && shaderFeed.stream && (
+              <SourcePreview stream={shaderFeed.stream} label="SHADER" />
+            )}
+            {vjState.sourceType === 'camera' && vjState.cameraSource === 'quantum' && quantumFeed.stream && (
+              <SourcePreview stream={quantumFeed.stream} label="QUANTUM" />
+            )}
+            {vjState.sourceType === 'camera' && vjState.cameraSource === 'gesturecam' && gesturecamFeed.stream && (
+              <SourcePreview stream={gesturecamFeed.stream} label="GESTURE" />
+            )}
+            <div className="flex-1 min-h-0 overflow-hidden">
+              <ControlDeck region="browser" {...controlDeckProps} />
+            </div>
+          </>
         )}
-        {vjState.layoutMode === 'standard' && vjState.sourceType === 'camera' && vjState.cameraSource === 'cymatics' && cymaticsFeed.stream && (
-          <SourcePreview stream={cymaticsFeed.stream} label="Cymatics" />
-        )}
-        {vjState.layoutMode === 'standard' && vjState.sourceType === 'camera' && vjState.cameraSource === 'akvj' && akvjFeed.stream && (
-          <SourcePreview stream={akvjFeed.stream} label="AKVJ" />
-        )}
-        {vjState.layoutMode === 'standard' && vjState.sourceType === 'camera' && vjState.cameraSource === 'akvj3d' && akvj3dFeed.stream && (
-          <SourcePreview stream={akvj3dFeed.stream} label="KINECT" />
-        )}
-        {vjState.layoutMode === 'standard' && vjState.sourceType === 'camera' && vjState.cameraSource === 'depthcloud' && depthCloudFeed.stream && (
-          <SourcePreview stream={depthCloudFeed.stream} label="DEPTH" />
-        )}
-        {vjState.layoutMode === 'standard' && vjState.sourceType === 'camera' && vjState.cameraSource === 'spectra' && spectraFeed.stream && (
-          <SourcePreview stream={spectraFeed.stream} label="SPECTRA" />
-        )}
-        {vjState.layoutMode === 'standard' && vjState.sourceType === 'camera' && vjState.cameraSource === 'shader' && shaderFeed.stream && (
-          <SourcePreview stream={shaderFeed.stream} label="SHADER" />
-        )}
-        {vjState.layoutMode === 'standard' && vjState.sourceType === 'camera' && vjState.cameraSource === 'asciiline' && asciilineFeed.stream && (
-          <SourcePreview stream={asciilineFeed.stream} label="ASCII" />
-        )}
-        <div className="flex-1 min-h-0 overflow-hidden">
-        <ControlDeck
-          region={vjState.layoutMode === 'standard' ? 'browser' : 'all'}
-          state={vjState}
-          updateState={updateState}
-          reset={resetState}
-          hasCameraError={!!error && vjState.sourceType === 'camera'}
-          questState={questFeed.state}
-          questError={questFeed.error}
-          questFps={questFeed.fps}
-          questLog={questFeed.log}
-          stitchState={stitchFeed.state}
-          stitchError={stitchFeed.error}
-          stitchFps={stitchFeed.fps}
-          stitchLog={stitchFeed.log}
-          akvjState={akvjFeed.state}
-          akvjError={akvjFeed.error}
-          akvjFps={akvjFeed.fps}
-          akvjLog={akvjFeed.log}
-          akvj3dState={akvj3dFeed.state}
-          akvj3dError={akvj3dFeed.error}
-          akvj3dFps={akvj3dFeed.fps}
-          akvj3dLog={akvj3dFeed.log}
-          akvj3dSensorState={akvj3dFeed.sidecarState}
-          akvj3dSensorLabel={akvj3dFeed.sidecarLabel}
-          depthState={depthCloudFeed.state}
-          depthBackend={depthCloudFeed.backend}
-          depthProgress={depthCloudFeed.progress}
-          depthFps={depthCloudFeed.fps}
-          depthError={depthCloudFeed.error}
-          depthLog={depthCloudFeed.log}
-        />
-        </div>
       </aside>
 
       </div>

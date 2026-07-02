@@ -4,6 +4,7 @@ import { AudioLevels } from '../useAudioAnalyzer';
 import { computeAudioModulation } from '../audioRouting';
 import { getVisibility } from '../sa3Bridge';
 import { PLUGIN_REGISTRY } from '../pluginRegistry';
+import { AsciiEffect, type AsciiSettings } from '../asciiline/AsciilineRenderer';
 
 // SOLO support. Built once from the plugin registry so it stays in sync
 // as plugins are added (no hand-maintained duplicate).
@@ -289,8 +290,17 @@ export function VideoOutput({ vjState, videoRef, cameraVideoRef, clipVideoRef, g
     const canvas = canvasRef.current;
     if (!canvas) return;
     
-    const ctx = canvas.getContext('2d', { alpha: false }); 
+    const ctx = canvas.getContext('2d', { alpha: false });
     if (!ctx) return;
+
+    // ASCII post effect (lazy: only spins up a WebGL2 context once enabled).
+    let asciiEffect: AsciiEffect | null = null;
+    // Construction can throw at the browser's WebGL context cap; latch so the
+    // loop does not allocate a fresh canvas+context attempt every frame.
+    // Toggling ASCII off clears the latch, so re-enabling retries.
+    let asciiInitFailed = false;
+    // Reused every frame so the render loop does not allocate a settings object.
+    const asciiSettings: AsciiSettings = { cols: 160, mono: false, accent: '#00ff41' };
 
     const offCanvas = document.createElement('canvas');
     const offCtx = offCanvas.getContext('2d', { alpha: false });
@@ -496,6 +506,27 @@ export function VideoOutput({ vjState, videoRef, cameraVideoRef, clipVideoRef, g
       const camVideo = cameraVideoRef?.current ?? null;
       const memVideo = clipVideoRef?.current ?? null;
       const legacyVideo = videoRef.current ?? null;
+      // A MediaStream-backed element can settle bound-but-paused if the first
+      // play() landed before any frame arrived (generative canvas-capture
+      // sources bind before the source canvas has drawn). Nudge it here so the
+      // main output starts decoding on its own, without a source re-pick.
+      for (const v of [camVideo, memVideo]) {
+        if (!v || !v.paused) continue;
+        // Same rule as the src-clip branch below: currentTime > 0 means the
+        // stream genuinely played once, so a paused element there is the SA3
+        // transport pause and must stay paused. Binding a new srcObject resets
+        // currentTime to 0, so fresh binds still get the kickstart.
+        if (v.srcObject) {
+          if (v.currentTime === 0) v.play().catch(() => { /* benign play/pause race */ });
+          continue;
+        }
+        // URL/file clips use src, not srcObject. If the initial play() was
+        // rejected (autoplay policy, play-before-decode race) the clip sits
+        // paused at t=0 and the feed stays black — nudge it. currentTime > 0
+        // means playback genuinely started once, so a paused clip there is a
+        // deliberate transport pause (sa3-vj/playback) and is left alone.
+        if (v.src && v.currentTime === 0) v.play().catch(() => { /* retried next frame */ });
+      }
       const hasCam = !!camVideo && camVideo.readyState >= 2 && camVideo.videoWidth > 0;
       const hasMem = !!memVideo && memVideo.readyState >= 2 && memVideo.videoWidth > 0;
       if (!hasCam && !hasMem) return;
@@ -1617,6 +1648,33 @@ export function VideoOutput({ vjState, videoRef, cameraVideoRef, clipVideoRef, g
          }
       }
 
+      // ASCII post effect -- re-render the final composited frame (whatever the
+      // source is) as glyphs. Applied before the CSS filters so hue/sat layer on
+      // top, and before the record copy so it lands in the take too.
+      if (!s.asciiFx) {
+        asciiInitFailed = false;
+      } else if (!asciiInitFailed) {
+        try {
+          if (!asciiEffect) asciiEffect = new AsciiEffect();
+          asciiSettings.cols = s.asciiCols ?? 160;
+          asciiSettings.mono = s.asciiMono ?? false;
+          asciiSettings.accent = s.asciiAccent ?? '#00ff41';
+          const ac = asciiEffect.render(canvas, w, h, asciiSettings, audio);
+          if (ac) {
+            // The feedback-trails block intentionally leaves globalAlpha lowered
+            // for its own draw; this composite-back must not inherit it, or the
+            // opaque ASCII frame blends over the raw video instead of replacing it.
+            ctx.save();
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.globalAlpha = 1.0;
+            ctx.drawImage(ac, 0, 0, w, h);
+            ctx.restore();
+          }
+        } catch {
+          asciiInitFailed = true;
+        }
+      }
+
       // --- FINAL CSS SVG OPICS ---
       let finalHue = currentHue;
       if (s.autoLFO) {
@@ -1722,6 +1780,7 @@ export function VideoOutput({ vjState, videoRef, cameraVideoRef, clipVideoRef, g
     return () => {
       cancelAnimationFrame(animationId);
       resizeObs?.disconnect();
+      asciiEffect?.dispose();
     };
   }, []);
 
@@ -1767,7 +1826,7 @@ export function VideoOutput({ vjState, videoRef, cameraVideoRef, clipVideoRef, g
           autoPlay
           playsInline
           muted
-          className="hidden"
+          className="absolute top-0 left-0 w-px h-px opacity-0 pointer-events-none"
           crossOrigin="anonymous"
         />
       ) : null}
@@ -1779,7 +1838,7 @@ export function VideoOutput({ vjState, videoRef, cameraVideoRef, clipVideoRef, g
           playsInline
           muted={!vjState.clipAudio}
           loop
-          className="hidden"
+          className="absolute top-0 left-0 w-px h-px opacity-0 pointer-events-none"
           crossOrigin="anonymous"
         />
       ) : null}
@@ -1791,7 +1850,7 @@ export function VideoOutput({ vjState, videoRef, cameraVideoRef, clipVideoRef, g
           playsInline
           muted={vjState.sourceType === 'camera' || !vjState.clipAudio}
           loop
-          className="hidden"
+          className="absolute top-0 left-0 w-px h-px opacity-0 pointer-events-none"
           crossOrigin="anonymous"
         />
       ) : null}

@@ -53,6 +53,8 @@ export interface ExternalLoadItem {
   title?: string | null;
   url?: string | null;
   kind?: 'audio' | 'video' | 'image' | string | null;
+  /** Optional poster image for bank cells (see VideoClip.thumbUrl). */
+  thumbUrl?: string | null;
 }
 
 export interface ExternalLoadSetPayload {

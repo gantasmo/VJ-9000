@@ -18,6 +18,8 @@ export interface UploadedMedia {
   id: string;
   /** Absolute, reload-stable URL for the file. */
   mediaUrl: string;
+  /** Absolute URL of the backend-generated poster thumb (null when absent). */
+  thumbUrl: string | null;
   kind: 'video' | 'image';
   hasAlpha: boolean;
 }
@@ -90,9 +92,12 @@ export async function uploadMediaToLibrary(file: File): Promise<UploadedMedia> {
   const rec = await res.json();
   const rel: string = rec.media_url || `/api/library/media/${rec.id}`;
   const mediaUrl = rel.startsWith('http') ? rel : `${base}${rel}`;
+  const thumbRel: string | null = rec.thumb_url || null;
+  const thumbUrl = thumbRel ? (thumbRel.startsWith('http') ? thumbRel : `${base}${thumbRel}`) : null;
   return {
     id: String(rec.id),
     mediaUrl,
+    thumbUrl,
     kind: rec.kind === 'image' ? 'image' : 'video',
     hasAlpha: !!rec.has_alpha,
   };

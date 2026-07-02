@@ -58,6 +58,17 @@ export interface AkvjParams {
   trails: number; // motion-trail (afterimage) amount
   distance: number; // camera distance multiplier
   renderFps: number; // render-loop cap (>=60 = uncapped); throttles GPU work
+  // Cloud transform (all optional; moves/rotates the CLOUD itself, not the
+  // camera, so the controls stay intuitive regardless of orbit state).
+  orbitOn?: boolean; // master orbit toggle; false holds a fixed view (default true)
+  lockOn?: boolean; // aim the camera at the live cloud centre (default true)
+  camX?: number; // cloud translate X, world units
+  camY?: number; // cloud translate Y
+  camZ?: number; // cloud translate Z
+  rotX?: number; // cloud rotation X about its own centre, radians
+  rotY?: number; // cloud rotation Y
+  rotZ?: number; // cloud rotation Z
+  recenterNonce?: number; // bumped by the UI to request a reframe; consumed by the hosting hook, not read here
 }
 
 export const AKVJ_PARAMS_DEFAULT: AkvjParams = {
@@ -71,6 +82,15 @@ export const AKVJ_PARAMS_DEFAULT: AkvjParams = {
   trails: 0,
   distance: 1,
   renderFps: 60,
+  orbitOn: true,
+  lockOn: true,
+  camX: 0,
+  camY: 0,
+  camZ: 0,
+  rotX: 0,
+  rotY: 0,
+  rotZ: 0,
+  recenterNonce: 0,
 };
 
 /** Particle looks the user flips through (the "STYLE" selector). */
@@ -317,6 +337,12 @@ export class AkvjCloudRenderer {
   private renderer!: THREE.WebGLRenderer;
   private scene!: THREE.Scene;
   private camera!: THREE.PerspectiveCamera;
+  // The cloud lives under root -> pivot. The pivot is offset by -cloudCenter so
+  // root.rotation spins the cloud about its OWN centre, and root.position ends
+  // up at cloudCenter + user translate, which makes root's world position the
+  // exact point the camera should lock onto.
+  private cloudRoot!: THREE.Group;
+  private cloudPivot!: THREE.Group;
   private points: THREE.Points | null = null;
   private lines: THREE.LineSegments | null = null;
   private material!: THREE.ShaderMaterial;
@@ -331,12 +357,33 @@ export class AkvjCloudRenderer {
   private xyTex: THREE.DataTexture | null = null;
   private depthTex: THREE.DataTexture | null = null;
   private depthData: Float32Array | null = null;
+  private xyTable: Float32Array | null = null; // CPU copy of the ray table for bbox scans
   private colorTex: THREE.Texture | null = null;
   private dummyTex: THREE.DataTexture | null = null;
   private lastBitmap: ImageBitmap | null = null;
 
   private spin = 0; // camera orbit speed (0 = frozen front view; default still)
   private orbitAngle = 0;
+  private orbitOn = true; // master orbit toggle
+  private lockOn = true; // aim the camera at the live cloud centre
+  private camX = 0; // cloud translate (world units)
+  private camY = 0;
+  private camZ = 0;
+  private rotX = 0; // cloud rotation about its own centre (radians)
+  private rotY = 0;
+  private rotZ = 0;
+  // Live CPU bounding box of the cloud, refreshed every 2nd depth frame at a
+  // coarse pixel stride (positions otherwise exist only on the GPU).
+  private readonly cloudCenter = TARGET.clone();
+  private halfW = 0;
+  private halfH = 0;
+  private halfD = 0;
+  private hasBounds = false;
+  private depthFrameCount = 0;
+  // Set by recenter(): fit the camera distance so the cloud fills the frame.
+  private framed = false;
+  private fitDist = 2.6;
+  private readonly lockTargetScratch = new THREE.Vector3();
   private renderFps = 60; // render-loop cap (>=60 = uncapped)
   private lastRender = 0;
   private rafId = 0;
@@ -367,6 +414,12 @@ export class AkvjCloudRenderer {
     this.scene.background = new THREE.Color(0x000000);
     this.camera = new THREE.PerspectiveCamera(60, this.width / this.height, 0.05, 60);
     this.camera.position.set(0, 0, 1.0);
+
+    this.cloudRoot = new THREE.Group();
+    this.cloudPivot = new THREE.Group();
+    this.cloudRoot.add(this.cloudPivot);
+    this.scene.add(this.cloudRoot);
+    this.applyCloudTransform();
 
     // 1x1 placeholder so the vertex shader always has a valid uColor sampler
     // before the first colour frame lands.
@@ -443,6 +496,15 @@ export class AkvjCloudRenderer {
   setParams(p: AkvjParams): void {
     this.spin = p.spin;
     this.distance = Math.max(0.2, p.distance);
+    this.orbitOn = p.orbitOn ?? true;
+    this.lockOn = p.lockOn ?? true;
+    this.camX = p.camX ?? 0;
+    this.camY = p.camY ?? 0;
+    this.camZ = p.camZ ?? 0;
+    this.rotX = p.rotX ?? 0;
+    this.rotY = p.rotY ?? 0;
+    this.rotZ = p.rotZ ?? 0;
+    this.applyCloudTransform();
     const u = this.material.uniforms;
     u.uSpeed.value = p.speed;
     u.uSizeMul.value = p.size;
@@ -488,16 +550,17 @@ export class AkvjCloudRenderer {
       this.xyTex.image.data.set(data);
       this.xyTex.needsUpdate = true;
     }
+    this.xyTable = data;
   }
 
   private rebuildGrid(w: number, h: number): void {
     if (this.points) {
-      this.scene.remove(this.points);
+      this.cloudPivot.remove(this.points);
       this.points.geometry.dispose();
       this.points = null;
     }
     if (this.lines) {
-      this.scene.remove(this.lines);
+      this.cloudPivot.remove(this.lines);
       this.lines.geometry.dispose();
       this.lines = null;
     }
@@ -506,6 +569,7 @@ export class AkvjCloudRenderer {
 
     this.gridW = w;
     this.gridH = h;
+    this.hasBounds = false;
     const count = w * h;
 
     const xyTex = new THREE.DataTexture(new Float32Array(count * 2), w, h, THREE.RGFormat, THREE.FloatType);
@@ -536,7 +600,7 @@ export class AkvjCloudRenderer {
     this.material.uniforms.uDepth.value = depthTex;
     this.points = new THREE.Points(geo, this.material);
     this.points.frustumCulled = false;
-    this.scene.add(this.points);
+    this.cloudPivot.add(this.points);
 
     // --- wireframe: sub-sampled grid of line segments to right + down neighbours ---
     const step = 2;
@@ -568,7 +632,7 @@ export class AkvjCloudRenderer {
     this.lines = new THREE.LineSegments(lgeo, this.lineMaterial);
     this.lines.frustumCulled = false;
     this.lines.visible = false;
-    this.scene.add(this.lines);
+    this.cloudPivot.add(this.lines);
   }
 
   /** Push one decoded frame: depth16 (mm) + the depth-aligned colour bitmap. */
@@ -583,6 +647,7 @@ export class AkvjCloudRenderer {
       const n = Math.min(out.length, depthU16.length);
       for (let i = 0; i < n; i++) out[i] = depthU16[i] * 0.001; // mm -> m
       this.depthTex.needsUpdate = true;
+      this.maybeScanBounds();
     }
     if (colorBitmap) {
       if (!this.colorTex) {
@@ -601,6 +666,104 @@ export class AkvjCloudRenderer {
       this.lastBitmap?.close();
       this.lastBitmap = colorBitmap;
     }
+  }
+
+  /** Push one depth frame already in meters (the DEPTH monocular path), skipping
+   *  the mm quantise/dequantise round-trip. Also re-uploads the colour canvas
+   *  bound via setColorCanvas, keeping colour paired with its depth. */
+  pushFrameDepthMeters(w: number, h: number, meters: Float32Array): void {
+    if (this.disposed) return;
+    if (w !== this.gridW || h !== this.gridH) return;
+    if (this.depthData && this.depthTex && meters.length >= this.depthData.length) {
+      this.depthData.set(meters.subarray(0, this.depthData.length));
+      this.depthTex.needsUpdate = true;
+      this.maybeScanBounds();
+    }
+    if (this.colorTex) this.colorTex.needsUpdate = true;
+  }
+
+  /** Bind ONE persistent canvas as the colour source (the DEPTH path). The
+   *  texture re-uploads on every pushFrameDepthMeters, so the caller never
+   *  needs createImageBitmap. */
+  setColorCanvas(canvas: HTMLCanvasElement): void {
+    if (this.disposed) return;
+    this.colorTex?.dispose();
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.flipY = false;
+    tex.minFilter = THREE.LinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.generateMipmaps = false;
+    tex.colorSpace = THREE.SRGBColorSpace;
+    this.colorTex = tex;
+    this.material.uniforms.uColor.value = tex;
+  }
+
+  /** Reframe: rescan the full bbox of the latest depth and fit the camera
+   *  distance so the cloud fills the output dead-centre. Returns false (and
+   *  changes nothing) when too little valid depth has arrived yet. */
+  recenter(): boolean {
+    if (this.disposed) return false;
+    if (!this.scanBounds(1)) return false;
+    const tanHalf = Math.tan((this.camera.fov * Math.PI) / 360);
+    this.fitDist = Math.max(this.halfH / tanHalf, this.halfW / (tanHalf * this.camera.aspect)) * 1.02 + this.halfD;
+    this.framed = true;
+    this.orbitAngle = 0;
+    return true;
+  }
+
+  /** Pivot cancels the cloud centre so root.rotation spins the cloud in place;
+   *  root then re-adds the centre plus the user translate. */
+  private applyCloudTransform(): void {
+    this.cloudPivot.position.set(-this.cloudCenter.x, -this.cloudCenter.y, -this.cloudCenter.z);
+    this.cloudRoot.position.set(
+      this.cloudCenter.x + this.camX,
+      this.cloudCenter.y + this.camY,
+      this.cloudCenter.z + this.camZ,
+    );
+    this.cloudRoot.rotation.set(this.rotX, this.rotY, this.rotZ);
+  }
+
+  private maybeScanBounds(): void {
+    this.depthFrameCount++;
+    if ((this.depthFrameCount & 1) === 0) this.scanBounds(4);
+  }
+
+  /** CPU bbox of the (undisplaced) cloud from the depth buffer + ray table,
+   *  mirroring the vertex shader's unprojection. Needs >=32 valid samples so a
+   *  near-empty frame cannot collapse the centre onto noise. */
+  private scanBounds(stride: number): boolean {
+    const depth = this.depthData;
+    const xy = this.xyTable;
+    if (!depth || !xy || xy.length < depth.length * 2) return false;
+    let minX = Infinity;
+    let minY = Infinity;
+    let minZ = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    let maxZ = -Infinity;
+    let valid = 0;
+    for (let i = 0; i < depth.length; i += stride) {
+      const d = depth[i];
+      if (d <= 0.05) continue;
+      const x = xy[i * 2] * d;
+      const y = -xy[i * 2 + 1] * d;
+      const z = -d;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+      if (z < minZ) minZ = z;
+      if (z > maxZ) maxZ = z;
+      valid++;
+    }
+    if (valid < 32) return false;
+    this.cloudCenter.set((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2);
+    this.halfW = (maxX - minX) / 2;
+    this.halfH = (maxY - minY) / 2;
+    this.halfD = (maxZ - minZ) / 2;
+    this.hasBounds = true;
+    this.applyCloudTransform();
+    return true;
   }
 
   private animate = (): void => {
@@ -622,15 +785,34 @@ export class AkvjCloudRenderer {
     this.lineMaterial.uniforms.uTime.value = t;
     (this.material.uniforms.uAudio.value as THREE.Vector4).set(bass, mid, high, volume);
 
-    // Camera: frozen face-on when spin≈0, else orbit at the chosen speed/direction.
-    if (Math.abs(this.spin) <= 0.001) {
-      this.camera.position.set(0, 0.05, 0.8 * this.distance);
-    } else {
+    // Camera: orbit at the chosen speed/direction when enabled, else frozen
+    // face-on. With LOCK the camera follows the live (translated) cloud centre;
+    // otherwise it aims at the legacy fixed target. The user transform moves the
+    // CLOUD (see applyCloudTransform), never the camera, so it stays intuitive.
+    const lockTarget =
+      this.lockOn && this.hasBounds
+        ? this.cloudRoot.getWorldPosition(this.lockTargetScratch)
+        : this.lockTargetScratch.copy(TARGET);
+    if (this.orbitOn && Math.abs(this.spin) > 0.001) {
       this.orbitAngle += dt * this.spin * 0.9;
-      const r = 2.6 * this.distance;
-      this.camera.position.set(Math.sin(this.orbitAngle) * r, 0.25, TARGET.z + Math.cos(this.orbitAngle) * r);
+      const r = (this.framed ? this.fitDist : 2.6) * this.distance;
+      this.camera.position.set(
+        lockTarget.x + Math.sin(this.orbitAngle) * r,
+        lockTarget.y + 0.25,
+        lockTarget.z + Math.cos(this.orbitAngle) * r,
+      );
+    } else {
+      // Unframed standoff keeps the legacy gap: the old camera sat at absolute
+      // z = 0.8*distance looking at TARGET.z = -1.8, i.e. 0.8*distance + 1.8 in
+      // front of the aim point. A bare 0.8*distance from the measured cloud
+      // centre would park the camera inside the cloud.
+      this.camera.position.set(
+        lockTarget.x,
+        lockTarget.y,
+        lockTarget.z + (this.framed ? this.fitDist * this.distance : 0.8 * this.distance + 1.8),
+      );
     }
-    this.camera.lookAt(TARGET);
+    this.camera.lookAt(lockTarget);
 
     this.composer.render();
   };
@@ -640,11 +822,11 @@ export class AkvjCloudRenderer {
     this.disposed = true;
     cancelAnimationFrame(this.rafId);
     if (this.points) {
-      this.scene.remove(this.points);
+      this.cloudPivot.remove(this.points);
       this.points.geometry.dispose();
     }
     if (this.lines) {
-      this.scene.remove(this.lines);
+      this.cloudPivot.remove(this.lines);
       this.lines.geometry.dispose();
     }
     this.xyTex?.dispose();

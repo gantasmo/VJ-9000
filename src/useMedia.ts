@@ -58,7 +58,7 @@ function describeMediaError(err: unknown, mode: 'device' | 'screen'): string {
 export function useMedia(
   sourceType: 'camera' | 'clip',
   clipUrl: string | null,
-  cameraSource: 'device' | 'screen' | 'quest' | 'queststitch' | 'cymatics' | 'akvj' | 'akvj3d' | 'depthcloud' | 'spectra' | 'shader' | 'asciiline' = 'device',
+  cameraSource: 'device' | 'screen' | 'quest' | 'queststitch' | 'cymatics' | 'akvj' | 'akvj3d' | 'depthcloud' | 'spectra' | 'shader' | 'quantum' | 'gesturecam' = 'device',
   cameraDeviceId?: string | null,
   cameraReinit = 0,
   /** Live MediaStream for the direct Quest source (canvas-captured WebCodecs
@@ -86,9 +86,12 @@ export function useMedia(
   /** Live MediaStream for the generic GLSL shader source (canvas-captured WebGL2
    *  feed from useShader, seeded by yotta). Same binding contract. */
   shaderStream: MediaStream | null = null,
-  /** Live MediaStream for the ASCII source (canvas-captured WebGL2 feed from
-   *  useAsciiline, the upstream frame re-rendered as glyphs). Same binding contract. */
-  asciilineStream: MediaStream | null = null,
+  /** Live MediaStream for the Quantum Lattice source (canvas-captured three.js
+   *  feed from useQuantumLattice). Same binding contract. */
+  quantumStream: MediaStream | null = null,
+  /** Live MediaStream for the gesturecam source (ported FaceViz: canvas-captured
+   *  MediaPipe hand+pose compositor from useGesturecam). Same binding contract. */
+  gesturecamStream: MediaStream | null = null,
 ) {
   const cameraVideoRef = useRef<HTMLVideoElement>(null);
   const clipVideoRef = useRef<HTMLVideoElement>(null);
@@ -130,14 +133,31 @@ export function useMedia(
             setError(`Video Decode Failure: ${msg}`);
           };
           memVideo.onerror = onErr;
-          memVideo.play().catch((e) => {
-            // Ignore benign play/pause races (AbortError) — they're not failures.
-            if (active && !isBenignPlayInterruption(e)) {
-              setError('Video Decode Failure: ' + (e?.message ?? String(e)));
-            }
-          });
+          const tryPlay = () => {
+            memVideo.play().catch((e) => {
+              if (!active) return;
+              // Autoplay with audio is blocked before the first user gesture
+              // (NotAllowedError). Start muted so the FEED still runs — the
+              // muted prop re-syncs from clipAudio on its next change.
+              if ((e as { name?: string })?.name === 'NotAllowedError' && !memVideo.muted) {
+                memVideo.muted = true;
+                memVideo.play().catch(() => { /* render-loop nudge retries */ });
+                return;
+              }
+              // Ignore benign play/pause races (AbortError) — they're not failures.
+              if (!isBenignPlayInterruption(e)) {
+                setError('Video Decode Failure: ' + (e?.message ?? String(e)));
+              }
+            });
+          };
+          // play() usually lands before any data has arrived; retry once the
+          // first frame is decodable. Property assignment (not addEventListener)
+          // so clip switches replace the handler instead of piling up.
+          memVideo.onloadeddata = tryPlay;
+          tryPlay();
       } else {
           memVideo.onerror = null;
+          memVideo.onloadeddata = null;
           // Do NOT clear with src='' — an empty string resolves to the document
           // URL, so the media element tries to decode the HTML page and Chromium
           // logs PIPELINE_ERROR_DECODE ("failed to send audio packet ... size=2")
@@ -149,7 +169,7 @@ export function useMedia(
       // Generative sources (Quest relay / Cymatics): bind the caller-owned
       // canvas-captured stream. We don't own these (useQuestCast / useCymatics
       // do), so we never stop their tracks here.
-      if (cameraSource === 'quest' || cameraSource === 'queststitch' || cameraSource === 'cymatics' || cameraSource === 'akvj' || cameraSource === 'akvj3d' || cameraSource === 'depthcloud' || cameraSource === 'spectra' || cameraSource === 'shader' || cameraSource === 'asciiline') {
+      if (cameraSource === 'quest' || cameraSource === 'queststitch' || cameraSource === 'cymatics' || cameraSource === 'akvj' || cameraSource === 'akvj3d' || cameraSource === 'depthcloud' || cameraSource === 'spectra' || cameraSource === 'shader' || cameraSource === 'quantum' || cameraSource === 'gesturecam') {
         const genStream =
           cameraSource === 'quest'
             ? questStream
@@ -165,8 +185,10 @@ export function useMedia(
             ? spectraStream
             : cameraSource === 'shader'
             ? shaderStream
-            : cameraSource === 'asciiline'
-            ? asciilineStream
+            : cameraSource === 'quantum'
+            ? quantumStream
+            : cameraSource === 'gesturecam'
+            ? gesturecamStream
             : cymaticsStream;
         // Drop any live getUserMedia/getDisplayMedia pipe we still hold.
         if (streamRef.current) {
@@ -295,7 +317,7 @@ export function useMedia(
     return () => {
       active = false;
     };
-  }, [sourceType, clipUrl, cameraSource, cameraDeviceId, cameraReinit, questStream, cymaticsStream, stitchStream, akvjStream, akvj3dStream, depthCloudStream, spectraStream, shaderStream, asciilineStream]);
+  }, [sourceType, clipUrl, cameraSource, cameraDeviceId, cameraReinit, questStream, cymaticsStream, stitchStream, akvjStream, akvj3dStream, depthCloudStream, spectraStream, shaderStream, quantumStream, gesturecamStream]);
 
   useEffect(() => {
     activeVideoRef.current = sourceType === 'clip' ? clipVideoRef.current : cameraVideoRef.current;

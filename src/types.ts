@@ -1,14 +1,32 @@
+/** A live/generative source pinned into a bank slot. Clicking the tile recalls
+ *  the source (and its preset, e.g. SHADER + nebula). */
+export interface SourceRef {
+  /** cameraSource id: 'device' | 'screen' | 'quest' | 'cymatics' | 'shader' | ... */
+  cameraSource: string;
+  /** Selected shader preset when cameraSource === 'shader'. */
+  shaderId?: string;
+}
+
 export interface VideoClip {
   id: string;
   name: string;
   url: string;
   size?: string;
+  /** Poster/thumbnail image for bank cells (library-backed clips carry the
+   *  backend-generated thumb.jpg). Cells render this instead of a per-cell
+   *  <video>, so a full bank does not open dozens of parallel media
+   *  connections — on HTTP/1.1 those saturate the per-origin pool and make
+   *  every video (including the live feed's clip) load slowly. */
+  thumbUrl?: string | null;
   /** What kind of media this entry is. Audio entries play through
    *  the same <video> element (analyzer-driven, no frames); image
    *  entries aren't routed here — they go to imageUrl below. The
    *  bucket therefore holds video + audio clips; image is its own
-   *  independent backdrop slot. */
-  kind?: 'video' | 'audio';
+   *  independent backdrop slot. A 'source' entry holds no media — it
+   *  pins a live/generative source (see `source`). */
+  kind?: 'video' | 'audio' | 'source';
+  /** Present when kind==='source': the source this tile recalls on click. */
+  source?: SourceRef;
 }
 
 export const DEFAULT_CLIPS: VideoClip[] = [];
@@ -36,12 +54,27 @@ export interface VJState {
    *  clip, else the webcam) turned into a live point cloud via in-browser monocular
    *  depth (no depth camera), rendered through the same AkvjCloudRenderer, or
    *  'shader' — a generic fullscreen GLSL fragment shader (atzedent-convention
-   *  shadertoys, seeded by yotta) rendered as a generative audio-reactive source,
-   *  or 'asciiline' — the upstream frame (loaded clip, else webcam) re-rendered as
-   *  live GPU ASCII (a port of ASCILINE's glyph mapper). */
-  cameraSource?: 'device' | 'screen' | 'quest' | 'queststitch' | 'cymatics' | 'akvj' | 'akvj3d' | 'depthcloud' | 'spectra' | 'shader' | 'asciiline';
+   *  shadertoys, seeded by yotta) rendered as a generative audio-reactive source.
+   *  Live GPU ASCII is NOT a source: it is the asciiFx post-effect over the final
+   *  composited frame (see asciiFx / asciiCols / asciiMono / asciiAccent below). */
+  cameraSource?: 'device' | 'screen' | 'quest' | 'queststitch' | 'cymatics' | 'akvj' | 'akvj3d' | 'depthcloud' | 'spectra' | 'shader' | 'quantum' | 'gesturecam';
+  /** Gesturecam (ported FaceViz) controls when cameraSource==='gesturecam'. */
+  gesturecamEffect?: 'auto' | 'fire' | 'melt' | 'warp' | 'bloom'; // 'auto' = gestures drive
+  gesturecamAmount?: number; // effect intensity 0..1.4
+  gesturecamRig?: boolean; // draw the hand/pose landmark rig overlay
   /** Active Cymatics mode when cameraSource==='cymatics'. */
   cymaticsMode?: 'orb' | 'cymatics' | 'landscape-chrome' | 'landscape-ferrofluid';
+  /** Active morph target when cameraSource==='quantum' (0 Torus, 1 Cube, 2 Star,
+   *  3 Cage) — the Quantum Lattice sacred-geometry source. */
+  quantumShape?: number;
+  /** Forced palette index (0..3) for the Quantum source, or -1 to follow shape. */
+  quantumPalette?: number;
+  /** Master audio reactivity amount for the Quantum source (0..2). */
+  quantumAudioDrive?: number;
+  /** Per-param base values (keyed by QUANTUM_PARAMS id) for the Quantum source. */
+  quantumParams?: Record<string, number>;
+  /** Per-param audio band override (keyed by id) for the Quantum source. */
+  quantumParamAudio?: Record<string, import('./quantum/QuantumLatticeEngine').QuantumAudioBand>;
   /** Active particle style when cameraSource==='akvj3d' (the KINECT point cloud);
    *  one of the AKVJ_STYLES keys (points/dust/flow/storm/glow/chrome/neon/
    *  electric/ferro/confetti). */
@@ -58,6 +91,17 @@ export interface VJState {
   akvjTrails?: number; // motion-trail (afterimage) amount
   akvjDistance?: number; // camera distance multiplier
   akvjRenderFps?: number; // render-loop cap (>=60 = uncapped)
+  /** Cloud transform for KINECT/DEPTH (shared; see AkvjParams): moves/rotates
+   *  the cloud itself about its own centre, never the camera. */
+  akvjOrbitOn?: boolean; // master orbit toggle (false = fixed view)
+  akvjLockOn?: boolean; // camera follows the live cloud centre (default true)
+  akvjCamX?: number; // cloud translate X (world units)
+  akvjCamY?: number; // cloud translate Y
+  akvjCamZ?: number; // cloud translate Z
+  akvjRotX?: number; // cloud rotation X (radians)
+  akvjRotY?: number; // cloud rotation Y
+  akvjRotZ?: number; // cloud rotation Z
+  akvjRecenterNonce?: number; // bump to reframe the cloud dead-centre (RECENTER)
   /** DEPTH engine controls (the monocular-depth model). */
   depthPrecision?: 'auto' | 'fp16' | 'q8' | 'fp32'; // model precision (OOM lever)
   depthRes?: number; // cloud/inference width (256 / 320 / 448)
@@ -77,8 +121,16 @@ export interface VJState {
    *  hard the audio energy accelerates the shader's camera/scrub. */
   shaderId?: string;
   shaderAudioDrive?: number;
-  /** ASCII source (cameraSource==='asciiline'): cell columns (density), mono accent
-   *  vs source true-colour, and the accent colour used in mono mode. */
+  /** Per-preset editable shader uniforms. Keyed `${presetId}:${uniform}` so each
+   *  preset keeps its own slider values + audio-band choices. */
+  shaderParams?: Record<string, number>;
+  shaderParamAudio?: Record<string, import('./shader/shaderPresets').ShaderAudioBand>;
+  /** Global shading style for the raymarched-fractal shaders (index into
+   *  SHADER_MATERIALS). */
+  shaderMaterial?: number;
+  /** ASCII EFFECT (asciiFx): re-render the final composited frame as GPU ASCII.
+   *  Cell columns (density), mono accent vs source true-colour, accent colour. */
+  asciiFx?: boolean;
   asciiCols?: number;
   asciiMono?: boolean;
   asciiAccent?: string;
@@ -285,6 +337,10 @@ export interface VJState {
    *  column width and the right browser column width. */
   vjLeftW?: number;
   vjRightW?: number;
+  /** Drag-resizable max height (px) of the top banks strip's scroll area. */
+  vjBanksH?: number;
+  /** Which tab the right browser column shows. */
+  vjBrowserTab?: 'sources' | 'library';
   /** Collapse state for the Library Pool browser above the banks. */
   poolCollapsed?: boolean;
 }
@@ -295,6 +351,9 @@ export const DEFAULT_VJ_STATE: VJState = {
   sourceType: 'camera',
   sourceBlend: 0,
   cameraSource: 'device',
+  gesturecamEffect: 'auto',
+  gesturecamAmount: 0.82,
+  gesturecamRig: true,
   cymaticsMode: 'orb',
   akvjMode: 'points',
   akvjSpin: 0,
@@ -307,6 +366,15 @@ export const DEFAULT_VJ_STATE: VJState = {
   akvjTrails: 0,
   akvjDistance: 1,
   akvjRenderFps: 60,
+  akvjOrbitOn: true,
+  akvjLockOn: true,
+  akvjCamX: 0,
+  akvjCamY: 0,
+  akvjCamZ: 0,
+  akvjRotX: 0,
+  akvjRotY: 0,
+  akvjRotZ: 0,
+  akvjRecenterNonce: 0,
   depthPrecision: 'auto',
   depthRes: 320,
   depthFps: 8,
@@ -318,6 +386,9 @@ export const DEFAULT_VJ_STATE: VJState = {
   spectraHeight: 1,
   spectraEnergy: 1,
   spectraAutoRotate: true,
+  quantumShape: 0,
+  quantumPalette: -1,
+  quantumAudioDrive: 1,
   shaderId: 'yotta',
   shaderAudioDrive: 1,
   asciiCols: 160,
@@ -345,6 +416,8 @@ export const DEFAULT_VJ_STATE: VJState = {
   leftPanelCollapsed: false,
   vjLeftW: 320,
   vjRightW: 360,
+  vjBanksH: 288,
+  vjBrowserTab: 'sources',
 
   hue: 0,
   saturation: 100,
