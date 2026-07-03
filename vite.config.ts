@@ -3,8 +3,13 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 import {defineConfig} from 'vite';
 
-export default defineConfig(() => {
+export default defineConfig(({command}) => {
   return {
+    // Production builds are served by the theDAW backend under the `/vj-app/`
+    // subpath (FastAPI StaticFiles mount), so assets must resolve relative to
+    // that prefix. The dev server keeps base '/' so the standalone
+    // `npm run dev` / theDAW_VJ_DEV spawn is unchanged.
+    base: command === 'build' ? '/vj-app/' : '/',
     plugins: [react(), tailwindcss()],
     optimizeDeps: {
       // transformers.js (the monocular-depth "depthcloud" source) loads
