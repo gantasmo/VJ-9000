@@ -1,18 +1,21 @@
 /**
- * AsciilineRenderer -- a GPU ASCII source for the VJ.
+ * AsciiEffect -- a GPU ASCII pass for the VJ output, applied as an EFFECT (not a
+ * source): it takes the final composited frame (whatever the current source is --
+ * a bank clip, the cam, a generative shader, anything) and re-renders it as ASCII.
  *
  * A faithful port of ASCILINE's AsciiMapper (YusufB5/ASCILINE, MIT with an
- * anti-advertisement clause) to a WebGL2 fragment pass. The upstream frame (the
- * loaded clip, else the webcam) is downscaled to the cell grid each frame (the
- * cv2.resize step), then a fragment shader picks a glyph per cell from the 93-char
- * luminance ramp and tints it with the cell's source colour (true colour) or a
- * single accent (mono). The glyph atlas is baked once with Canvas2D; that is the
- * only Canvas2D use, and the slow per-cell fillText render path from the original
- * is replaced by the GPU pass.
+ * anti-advertisement clause) to a WebGL2 fragment pass. The incoming frame is
+ * downscaled to the cell grid (the cv2.resize step), then a fragment shader picks
+ * a glyph per cell from the 93-char luminance ramp and tints it with the cell's
+ * source colour (true colour) or a single accent (mono). The glyph atlas is baked
+ * once with Canvas2D.
  *
- * Per the spec (docs/plans/2026-06-25-asciiline-glsl-port-spec.md) the glyph index
- * uses the corrected even spread over the whole ramp rather than ASCILINE's
- * integer-step saturation, so highlights use the full character set.
+ * Unlike the old source renderer this owns no RAF: VideoOutput calls render() once
+ * per frame with its output canvas, and draws the returned ASCII canvas back over
+ * the frame, so ASCII is burned into the live view AND the recording.
+ *
+ * Per the spec the glyph index uses an even spread over the whole ramp rather than
+ * ASCILINE's integer-step saturation, so highlights use the full character set.
  *
  * License: ASCILINE is MIT with an ANTI-ADVERTISEMENT RESTRICTION. This source
  * must not be used to render advertising. Attribution: YusufB5/ASCILINE.
@@ -91,12 +94,9 @@ function hexToRgb(hex: string): [number, number, number] {
   return [((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255];
 }
 
-export class AsciilineRenderer {
+export class AsciiEffect {
   private readonly canvas: HTMLCanvasElement;
   private readonly gl: WebGL2RenderingContext;
-  private readonly getVideo: () => HTMLVideoElement | null;
-  private readonly getLevels: () => AsciiLevels;
-  private settings: AsciiSettings;
 
   private program: WebGLProgram | null = null;
   private buffer: WebGLBuffer | null = null;
@@ -106,34 +106,27 @@ export class AsciilineRenderer {
   private readonly sctx: CanvasRenderingContext2D | null;
   private uni: Record<string, WebGLUniformLocation | null> = {};
 
-  private rafId = 0;
   private disposed = false;
   private gridW = 0;
   private gridH = 0;
+  private lastAccentHex = '';
+  private lastAccentRgb: [number, number, number] = [0, 1, 0.25];
 
-  constructor(
-    canvas: HTMLCanvasElement,
-    getVideo: () => HTMLVideoElement | null,
-    getLevels: () => AsciiLevels,
-    opts?: { settings?: AsciiSettings },
-  ) {
-    this.canvas = canvas;
-    this.getVideo = getVideo;
-    this.getLevels = getLevels;
-    this.settings = opts?.settings ?? { ...ASCII_SETTINGS_DEFAULT };
-    const gl = canvas.getContext('webgl2');
+  constructor() {
+    this.canvas = document.createElement('canvas');
+    this.canvas.width = 1280;
+    this.canvas.height = 720;
+    const gl = this.canvas.getContext('webgl2');
     if (!gl) throw new Error('WebGL2 unavailable');
     this.gl = gl;
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true); // both textures upright vs gl_FragCoord
-    canvas.addEventListener('webglcontextlost', (e) => e.preventDefault(), false);
+    this.canvas.addEventListener('webglcontextlost', (e) => e.preventDefault(), false);
     this.small = document.createElement('canvas');
-    this.sctx = this.small.getContext('2d', { willReadFrequently: true });
+    // Opaque, GPU-backed surface: this context is only drawn into (drawImage)
+    // and consumed by texImage2D; willReadFrequently would force a CPU surface
+    // plus a per-frame readback for a context that never calls getImageData.
+    this.sctx = this.small.getContext('2d', { alpha: false });
     this.build();
-    this.rafId = requestAnimationFrame(this.loop);
-  }
-
-  setSettings(s: AsciiSettings): void {
-    this.settings = s;
   }
 
   private build(): void {
@@ -206,16 +199,23 @@ export class AsciilineRenderer {
     return tex;
   }
 
-  private loop = (): void => {
-    this.rafId = requestAnimationFrame(this.loop);
-    if (this.disposed || !this.program) return;
+  /**
+   * ASCII-ize `source` at w x h and return this effect's canvas to draw back.
+   * Returns null when no fresh frame was produced (disposed, lost context, or
+   * degenerate size), so the caller can skip the composite instead of drawing
+   * a stale or blank canvas.
+   */
+  render(source: CanvasImageSource, w: number, h: number, settings: AsciiSettings, levels: AsciiLevels): HTMLCanvasElement | null {
     const gl = this.gl;
-    if (gl.isContextLost()) return;
+    if (this.disposed || !this.program || gl.isContextLost()) return null;
+    if (w < 1 || h < 1) return null;
+    if (this.canvas.width !== w || this.canvas.height !== h) {
+      this.canvas.width = w;
+      this.canvas.height = h;
+    }
 
-    const W = this.canvas.width;
-    const H = this.canvas.height;
-    const cols = Math.max(8, Math.round(this.settings.cols));
-    const rows = Math.max(2, Math.round(GLYPH_ASPECT * cols * (H / W)));
+    const cols = Math.max(8, Math.round(settings.cols));
+    const rows = Math.max(2, Math.round(GLYPH_ASPECT * cols * (h / w)));
     if (cols !== this.gridW || rows !== this.gridH) {
       this.gridW = cols;
       this.gridH = rows;
@@ -223,19 +223,23 @@ export class AsciilineRenderer {
       this.small.height = rows;
     }
 
-    // Downscale the upstream frame to the cell grid (the cv2.resize step), then
-    // upload it as the source texture so each texel is exactly one averaged cell.
-    const video = this.getVideo();
-    if (video && this.sctx && video.readyState >= 2 && video.videoWidth) {
-      this.sctx.drawImage(video, 0, 0, cols, rows);
+    // Downscale the incoming frame to the cell grid, then upload it as the source
+    // texture so each texel is exactly one averaged cell.
+    if (this.sctx) {
+      this.sctx.drawImage(source, 0, 0, cols, rows);
       gl.bindTexture(gl.TEXTURE_2D, this.srcTex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this.small);
     }
 
-    const lv = this.getLevels();
-    const [ar, ag, ab] = hexToRgb(this.settings.accent);
+    // The accent only changes on user input, so the hex parse is cached rather
+    // than re-run every frame.
+    if (settings.accent !== this.lastAccentHex) {
+      this.lastAccentHex = settings.accent;
+      this.lastAccentRgb = hexToRgb(settings.accent);
+    }
+    const [ar, ag, ab] = this.lastAccentRgb;
 
-    gl.viewport(0, 0, W, H);
+    gl.viewport(0, 0, w, h);
     gl.clearColor(0, 0, 0, 1);
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.useProgram(this.program);
@@ -248,21 +252,21 @@ export class AsciilineRenderer {
     gl.bindTexture(gl.TEXTURE_2D, this.atlasTex);
     if (this.uni.u_atlas) gl.uniform1i(this.uni.u_atlas, 1);
 
-    if (this.uni.u_resolution) gl.uniform2f(this.uni.u_resolution, W, H);
+    if (this.uni.u_resolution) gl.uniform2f(this.uni.u_resolution, w, h);
     if (this.uni.u_grid) gl.uniform2f(this.uni.u_grid, cols, rows);
     if (this.uni.u_n) gl.uniform1f(this.uni.u_n, N);
-    if (this.uni.u_mono) gl.uniform1f(this.uni.u_mono, this.settings.mono ? 1 : 0);
+    if (this.uni.u_mono) gl.uniform1f(this.uni.u_mono, settings.mono ? 1 : 0);
     if (this.uni.u_accent) gl.uniform3f(this.uni.u_accent, ar, ag, ab);
-    if (this.uni.u_bass) gl.uniform1f(this.uni.u_bass, clamp01(lv.bass));
-    if (this.uni.u_volume) gl.uniform1f(this.uni.u_volume, clamp01(lv.volume));
+    if (this.uni.u_bass) gl.uniform1f(this.uni.u_bass, clamp01(levels.bass));
+    if (this.uni.u_volume) gl.uniform1f(this.uni.u_volume, clamp01(levels.volume));
 
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-  };
+    return this.canvas;
+  }
 
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    cancelAnimationFrame(this.rafId);
     const gl = this.gl;
     if (this.program) gl.deleteProgram(this.program);
     if (this.buffer) gl.deleteBuffer(this.buffer);

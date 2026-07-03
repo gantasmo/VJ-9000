@@ -123,6 +123,11 @@ export function useAkvj3d(
     let totalFrames = 0;
     let everLive = false;
     let decoding = false;
+    // Latest-frame slot: a burst after a stall overwrites this instead of
+    // queueing, so the decoder always consumes the newest frame and never
+    // serially chews through stale ones.
+    let latestFrame: ArrayBuffer | null = null;
+    let drainQueued = false;
     let lastTick = performance.now();
     let lastFrameAt = performance.now();
     let watchdog: ReturnType<typeof setInterval> | null = null;
@@ -258,14 +263,25 @@ export function useAkvj3d(
       }
       // slice() to get a 4-byte-aligned buffer (header is 14 bytes).
       const chunk = new Float32Array(buffer.slice(14, 14 + rowCount * w * 2 * 4));
-      tableData.set(chunk, rowStart * w * 2);
+      const offset = rowStart * w * 2;
+      // The sidecar re-sends the whole table as a 5s heartbeat; comparing before
+      // writing lets an unchanged chunk skip the full-texture re-upload below.
+      let changed = false;
+      for (let i = 0; i < chunk.length; i++) {
+        if (tableData[offset + i] !== chunk[i]) {
+          changed = true;
+          break;
+        }
+      }
+      if (changed) tableData.set(chunk, offset);
       tableRowsCovered = Math.max(tableRowsCovered, rowStart + rowCount);
-      if (!tableReady && tableRowsCovered >= h) {
+      const becameReady = !tableReady && tableRowsCovered >= h;
+      if (becameReady) {
         tableReady = true;
       }
-      if (tableReady && renderer) {
+      if (tableReady && renderer && (becameReady || changed)) {
         renderer.setXYTable(w, h, tableData);
-        if (!everLive) logLine(`XY table ready ${w}x${h}`);
+        if (!everLive && becameReady) logLine(`XY table ready ${w}x${h}`);
       }
     };
 
@@ -296,7 +312,23 @@ export function useAkvj3d(
         /* corrupt / partial frame — skip it */
       } finally {
         decoding = false;
+        // A newer frame may have landed in the slot mid-decode; drain to it.
+        if (latestFrame) scheduleDrain();
       }
+    };
+
+    const drainLatest = () => {
+      drainQueued = false;
+      if (closed || decoding) return; // the running decode re-drains on finish
+      const buf = latestFrame;
+      if (!buf) return;
+      latestFrame = null;
+      void onDepthColorFrame(buf, new DataView(buf));
+    };
+    const scheduleDrain = () => {
+      if (drainQueued) return;
+      drainQueued = true;
+      queueMicrotask(drainLatest);
     };
 
     const onMessage = (buffer: ArrayBuffer) => {
@@ -310,7 +342,10 @@ export function useAkvj3d(
       }
       const type = dv.getUint8(4);
       if (type === 1) onTableChunk(buffer, dv);
-      else if (type === 2) void onDepthColorFrame(buffer, dv);
+      else if (type === 2) {
+        latestFrame = buffer; // overwrite any unprocessed frame (drop-to-latest)
+        scheduleDrain();
+      }
     };
 
     const teardownSocket = (s: WebSocket | null) => {
@@ -408,7 +443,10 @@ export function useAkvj3d(
   }, [mode]);
   useEffect(() => {
     rendererRef.current?.setParams(params);
-  }, [params.spin, params.speed, params.size, params.density, params.bright, params.bloom, params.wind, params.trails, params.distance]);
+  }, [params.spin, params.speed, params.size, params.density, params.bright, params.bloom, params.wind, params.trails, params.distance, params.renderFps, params.orbitOn, params.lockOn, params.camX, params.camY, params.camZ, params.rotX, params.rotY, params.rotZ]);
+  useEffect(() => {
+    if ((params.recenterNonce ?? 0) > 0) rendererRef.current?.recenter();
+  }, [params.recenterNonce]);
 
   return feed;
 }

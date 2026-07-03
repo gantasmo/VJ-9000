@@ -11,8 +11,9 @@
  *
  * Modes: orb (ferrofluid blob), cymatics (Chladni plate), landscape-chrome,
  * landscape-ferrofluid. Every mesh is gated on the EXR env map loading, so
- * `/piz_compressed.exr` must be served from the app root (it is copied into
- * this app's public/).
+ * `piz_compressed.exr` (in this app's public/) must be served from the app
+ * base — `import.meta.env.BASE_URL` — which is '/' for the dev server and
+ * '/vj-app/' for the backend-served production build.
  */
 import * as THREE from 'three';
 import { EXRLoader } from 'three/addons/loaders/EXRLoader.js';
@@ -34,7 +35,7 @@ export interface CymaticsLevels {
   volume: number;
 }
 
-const EXR_URL = '/piz_compressed.exr';
+const EXR_URL = import.meta.env.BASE_URL + 'piz_compressed.exr';
 const FOV = 65;
 const TAN_HALF_FOV = Math.tan(THREE.MathUtils.degToRad(FOV) / 2);
 
